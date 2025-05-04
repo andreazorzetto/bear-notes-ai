@@ -16,12 +16,12 @@ Your Bear notes are now searchable via AI. Finally put those 237 half-written th
 
 - macOS
 - Python 3.6+
-- Choose your AI poison: Ollama, OpenAI API credits, or Docker Model Runner
+- Ollama, OpenAI API credits, or Docker Model Runner
 
 ## Setup
 
 ```bash
-git clone https://github.com/yourusername/bear-notes-ai.git
+git clone https://github.com/andreazorzetto/bear-notes-ai.git
 cd bear-notes-ai
 pip install -r requirements.txt
 chmod +x bear_notes_ai.py
@@ -30,21 +30,20 @@ chmod +x bear_notes_ai.py
 ## Usage Examples
 
 ```bash
-# Free AI (Ollama)
+# Ollama
 ./bear_notes_ai.py --ollama -t "projectnotes" -q "What deadlines did I ignore?"
 
-# Expensive AI (GPT-4o)
+# GPT-4o
 ./bear_notes_ai.py --chatgpt --api-key "sk-yourwalletisempty" -k "meeting" -q "Summarize those meetings zoom transcribed for me"
 
-# Docker AI (local)
-./bear_notes_ai.py --docker-model -m "ai/llama3.1:7b-instruct-Q5_K_M" -t "research" -q "What did I discover?"
+# Docker Model
+./bear_notes_ai.py --docker-model -m "deepseek-r1" -t "research" -q "What did I discover?"
 ```
 
 ## Core Options
 
 - Search: `-t/--tag`, `-k/--keyword`, `-u/--url`  
 - AI: `--ollama`, `--chatgpt`, `--docker-model`
-- Processing: `--limit N`, `--batch-size N`, `--batch-delay N`
 
 ## Advanced Features
 
@@ -56,6 +55,8 @@ chmod +x bear_notes_ai.py
 ## Future Development
 
 - Bulk modification capabilities (for when AI decides your notes need a complete rewrite)
+- UI(?)
+  
 ## Setup Guides
 
 - ChatGPT: See `chatgpt_setup_guide.md` (requires credit card)
