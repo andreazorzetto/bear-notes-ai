@@ -309,7 +309,7 @@ def main():
     ai_type.add_argument("--docker-model", action="store_true", help="Use Docker Model Runner")
     ai_group.add_argument("-m", "--model", default="llama3",
                           help="Model to use (works with Ollama and Docker Model Runner)")
-    ai_group.add_argument("--host", default="http://localhost:11434", help="Ollama server URL")
+    ai_group.add_argument("--host", default="http://localhost:12434/engines/v1", help="Ollama server URL")
     ai_group.add_argument("--docker-model-endpoint",
                           help="URL for Docker Model Runner API (default: http://model-runner.docker.internal/engines/v1)")
     ai_group.add_argument("--api-key", help="OpenAI API key for ChatGPT")
