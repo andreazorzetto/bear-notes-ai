@@ -25,23 +25,23 @@ Your Bear notes are now searchable via AI. Finally put those 237 half-written th
 git clone https://github.com/andreazorzetto/bear-notes-ai.git
 cd bear-notes-ai
 pip install -r requirements.txt
-chmod +x bear_notes_ai_docker.py
+chmod +x bear-notes-ai.py
 ```
 
 ## Usage Examples
 
 ```bash
 # Ollama with default model
-./bear_notes_ai_docker.py --ollama -t "projectnotes" -q "What deadlines did I ignore?"
+./bear-notes-ai.py --ollama -t "projectnotes" -q "What deadlines did I ignore?"
 
 # Ollama with specific model
-./bear_notes_ai_docker.py --ollama -m "llama3:latest" -k "meeting" -q "Summarize these meeting notes"
+./bear-notes-ai.py --ollama -m "llama3:latest" -k "meeting" -q "Summarize these meeting notes"
 
 # GPT-4o
-./bear_notes_ai_docker.py --chatgpt --api-key "sk-yourwalletisempty" -k "meeting" -q "Summarize those meetings zoom transcribed for me"
+./bear-notes-ai.py --chatgpt --api-key "sk-yourwalletisempty" -k "meeting" -q "Summarize those meetings zoom transcribed for me"
 
 # Docker Model
-./bear_notes_ai_docker.py --docker-model -m "deepseek-r1:latest" -t "research" -q "What did I discover?"
+./bear-notes-ai.py --docker-model -m "deepseek-r1:latest" -t "research" -q "What did I discover?"
 ```
 
 ## Core Options
