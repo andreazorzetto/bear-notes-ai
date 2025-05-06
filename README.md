@@ -71,10 +71,11 @@ The script automatically handles large documents by:
 - Reserving appropriate tokens for responses
 - Processing content using different strategies based on size
 
-## Future Development
+## Future - Under Consideration - Developments
 
 - Bulk modification capabilities (for when AI decides your notes need a complete rewrite)
 - UI(?)
+- Free chatGPT integration
   
 ## Setup Guides
 
