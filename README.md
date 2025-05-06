@@ -2,7 +2,6 @@
 
 <img src="bear-ai-logo.png" alt="Bear AI Logo" width="150"/>
 
-
 Your Bear notes are now searchable via AI. Finally put those 237 half-written thoughts to good use.
 
 ## What It Does
@@ -11,6 +10,8 @@ Your Bear notes are now searchable via AI. Finally put those 237 half-written th
 - Works with Ollama (free/slow), ChatGPT (expensive/fast), or Docker Model Runner
 - Filters by tags (#obsession), keywords ("todo"), or direct URLs
 - Batch processing for when you've gone note-crazy
+- Smart token management with chunking strategies for large documents
+- Parallel processing for multiple notes
 
 ## Requirements
 
@@ -24,33 +25,51 @@ Your Bear notes are now searchable via AI. Finally put those 237 half-written th
 git clone https://github.com/andreazorzetto/bear-notes-ai.git
 cd bear-notes-ai
 pip install -r requirements.txt
-chmod +x bear_notes_ai.py
+chmod +x bear_notes_ai_docker.py
 ```
 
 ## Usage Examples
 
 ```bash
-# Ollama
-./bear_notes_ai.py --ollama -t "projectnotes" -q "What deadlines did I ignore?"
+# Ollama with default model
+./bear_notes_ai_docker.py --ollama -t "projectnotes" -q "What deadlines did I ignore?"
+
+# Ollama with specific model
+./bear_notes_ai_docker.py --ollama -m "llama3:latest" -k "meeting" -q "Summarize these meeting notes"
 
 # GPT-4o
-./bear_notes_ai.py --chatgpt --api-key "sk-yourwalletisempty" -k "meeting" -q "Summarize those meetings zoom transcribed for me"
+./bear_notes_ai_docker.py --chatgpt --api-key "sk-yourwalletisempty" -k "meeting" -q "Summarize those meetings zoom transcribed for me"
 
 # Docker Model
-./bear_notes_ai.py --docker-model -m "deepseek-r1" -t "research" -q "What did I discover?"
+./bear_notes_ai_docker.py --docker-model -m "deepseek-r1:latest" -t "research" -q "What did I discover?"
 ```
 
 ## Core Options
 
 - Search: `-t/--tag`, `-k/--keyword`, `-u/--url`  
 - AI: `--ollama`, `--chatgpt`, `--docker-model`
+- Model: `-m/--model` (default: "llama3" for Ollama, "gpt-4o" for ChatGPT)
 
 ## Advanced Features
 
 - `--limit 10`: Process only the 10 most recent notes
 - `--batch-size 5`: Process notes in batches to avoid API rate limits
+- `--parallel`: Enable parallel processing for multiple notes
+- `--max-workers 4`: Set the number of parallel workers (default: 2)
+- `--max-tokens 8000`: Override default context window size
+- `--chunking-strategy`: Choose chunking strategy for large content (auto, document, token, recursive)
 - `-l/--list`: Preview matching notes without wasting tokens
+- `-v/--verbose`: Show detailed token information
 - `-y/--yes`: Skip confirmation
+
+## Token Management
+
+The script automatically handles large documents by:
+
+- Detecting context window sizes from models
+- Calculating optimal chunk sizes
+- Reserving appropriate tokens for responses
+- Processing content using different strategies based on size
 
 ## Future Development
 
