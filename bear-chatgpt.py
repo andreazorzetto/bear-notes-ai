@@ -163,29 +163,56 @@ Please analyze the above document(s) and answer the question thoroughly."""
 
 
 class LocalServer:
-    """Simple HTTP server to provide the content for Tampermonkey"""
+    """HTTP server to provide the content for Tampermonkey and receive responses"""
 
     def __init__(self, prompt_content, port=8765):
         self.prompt_content = prompt_content
         self.port = port
+        self.chatgpt_response = None
+        self.response_received = False
 
     def start(self):
-        """Start the local server to serve the content"""
+        """Start the local server to serve the content and wait for response"""
         handler = self._create_handler()
 
         with socketserver.TCPServer(("", self.port), handler) as httpd:
             print(f"\nServer started at http://localhost:{self.port}")
             print("Waiting for the Tampermonkey script to fetch the content...")
             print("Please activate the script by navigating to chat.openai.com")
-            print("Press Ctrl+C to stop the server when finished")
+            print("The server will automatically stop after receiving ChatGPT's response")
+            print("(You can also press Ctrl+C to stop the server manually)")
+
+            # Set a short timeout to allow checking for response_received flag
+            httpd.timeout = 1.0
 
             try:
-                httpd.serve_forever()
+                # Continue serving until we receive a response or get interrupted
+                while not self.response_received:
+                    httpd.handle_request()
             except KeyboardInterrupt:
-                print("\nServer stopped.")
+                print("\nServer stopped manually.")
+
+            # If we got a response, print it
+            if self.response_received:
+                print("\n" + "=" * 80)
+                print("CHATGPT RESPONSE:")
+                print("-" * 80)
+                print(self.chatgpt_response)
+                print("=" * 80)
+
+                # Offer to save the response to a file
+                save_option = input("\nWould you like to save this response to a file? (y/n) [n]: ")
+                if save_option.lower() == 'y':
+                    filename = input("Enter filename (default: chatgpt_response.txt): ") or "chatgpt_response.txt"
+                    with open(filename, 'w') as f:
+                        f.write(self.chatgpt_response)
+                    print(f"Response saved to {filename}")
+            else:
+                print("\nServer stopped without receiving a response.")
 
     def _create_handler(self):
         prompt_content = self.prompt_content
+        server_instance = self  # Reference to the server instance
 
         class CustomHandler(http.server.SimpleHTTPRequestHandler):
             def do_GET(self):
@@ -201,14 +228,57 @@ class LocalServer:
                     })
 
                     self.wfile.write(response.encode())
-                    print("Content served successfully!")
+                    print("Content served successfully! Waiting for ChatGPT to respond...")
                 else:
                     self.send_response(404)
                     self.end_headers()
                     self.wfile.write(b'Not found')
 
+            def do_POST(self):
+                if self.path == '/response':
+                    content_length = int(self.headers['Content-Length'])
+                    post_data = self.rfile.read(content_length)
+
+                    try:
+                        data = json.loads(post_data.decode('utf-8'))
+                        response_text = data.get('response', '')
+
+                        # Save the response in the server instance
+                        server_instance.chatgpt_response = response_text
+                        server_instance.response_received = True
+
+                        # Send success response
+                        self.send_response(200)
+                        self.send_header('Content-type', 'application/json')
+                        self.send_header('Access-Control-Allow-Origin', '*')
+                        self.end_headers()
+
+                        self.wfile.write(json.dumps({'success': True}).encode())
+                        print("ChatGPT response received! Server will stop shortly...")
+                    except Exception as e:
+                        self.send_response(400)
+                        self.send_header('Content-type', 'application/json')
+                        self.send_header('Access-Control-Allow-Origin', '*')
+                        self.end_headers()
+
+                        self.wfile.write(json.dumps({
+                            'success': False,
+                            'error': str(e)
+                        }).encode())
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+                    self.wfile.write(b'Not found')
+
+            def do_OPTIONS(self):
+                self.send_response(200)
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+                self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+                self.end_headers()
+
             def log_message(self, format, *args):
-                # Suppress log messages
+                # Suppress detailed log messages
                 return
 
         return CustomHandler
