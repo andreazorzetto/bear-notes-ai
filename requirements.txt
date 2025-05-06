@@ -1,2 +1,20 @@
+# Requirements for Bear to ChatGPT and Bear Notes AI Integration
+
+# Common HTTP and networking libraries
 requests>=2.28.0
-sqlite3>=3.30.0
+urllib3>=1.26.0
+
+# For bear-notes-ai.py (AI Integration)
+tiktoken>=0.5.0  # For token counting with OpenAI/ChatGPT models
+openai>=1.0.0    # For OpenAI/ChatGPT API integration
+
+# Utilities
+typing-extensions>=4.5.0  # For enhanced type hints
+python-dotenv>=0.21.0    # For loading environment variables from .env files (API keys)
+
+# CLI enhancements
+tqdm>=4.65.0      # For progress bars
+rich>=13.0.0      # For better terminal output formatting
+
+# File and data handling
+pytz>=2022.7      # For timezone handling
