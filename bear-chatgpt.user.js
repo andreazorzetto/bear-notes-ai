@@ -1,40 +1,68 @@
 // ==UserScript==
-// @name         Bear Notes to ChatGPT with Improved Chunking
+// @name         Bear Notes to ChatGPT with Enhanced Chunking
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      2.1
 // @description  Auto-paste Bear Notes with smart chunking for long content, get ChatGPT response, and close tab
-// @author       Generated Script (Enhanced)
+// @author       Enhanced Script
 // @match        https://chatgpt.com/*
+// @match        https://chat.openai.com/*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
 // @connect      localhost
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    const PORT = 8765;
-    const SERVER_URL = `http://localhost:${PORT}/content`;
-    const RESPONSE_URL = `http://localhost:${PORT}/response`;
+    // Configuration - can be customized
+    const CONFIG = {
+        PORT: 8765,
+        CHUNK_SIZE_INITIAL: 10000,  // Start with this chunk size
+        CHUNK_SIZE_MIN: 1000,       // Minimum chunk size to try
+        CHUNK_REDUCTION_FACTOR: 0.7, // How much to reduce chunk size when hitting limits
+        RETRY_ATTEMPTS: 3,          // Number of retries for network operations
+        RETRY_DELAY: 2000,          // Delay between retries in milliseconds
+        AUTO_CLOSE_DELAY: 3000,     // Time to wait before closing tab after completion
+        DEBUG_MODE: false           // Set to true to enable debug messages
+    };
 
-    // Config for chunking
-    const CHUNK_SIZE_INITIAL = 10000; // Start with this chunk size
-    const CHUNK_SIZE_MIN = 1000;      // Minimum chunk size to try
-    const CHUNK_REDUCTION_FACTOR = 0.7; // How much to reduce chunk size when hitting limits
+    // URLs for API endpoints
+    const SERVER_URL = `http://localhost:${CONFIG.PORT}/content`;
+    const RESPONSE_URL = `http://localhost:${CONFIG.PORT}/response`;
 
     // Improved chunking strategy templates
-    const INITIAL_MESSAGE_TEMPLATE =
-        "I'm sending a document in {totalChunks} chunks. Do not respond or process until I say 'ALL PARTS SENT'. " +
-        "After all parts are received, please {question}";
+    const TEMPLATES = {
+        INITIAL_MESSAGE:
+            "I'm sending a document in {totalChunks} chunks. Do not respond or process until I say 'ALL PARTS SENT'. " +
+            "After all parts are received, please {question}",
 
-    const CHUNK_MESSAGE_TEMPLATE =
-        "Chunk {currentChunk}/{totalChunks}:\n\n" +
-        "{chunkContent}\n\n" +
-        "--- End of Chunk {currentChunk}/{totalChunks} ---";
+        CHUNK_MESSAGE:
+            "Chunk {currentChunk}/{totalChunks}:\n\n" +
+            "{chunkContent}\n\n" +
+            "--- End of Chunk {currentChunk}/{totalChunks} ---",
 
-    const FINAL_MESSAGE_TEMPLATE =
-        "ALL PARTS SENT.\n" +
-        "To confirm, I've sent {totalChunks} chunks of content.\n" +
-        "Please now {question}";
+        FINAL_MESSAGE:
+            "ALL PARTS SENT.\n" +
+            "To confirm, I've sent {totalChunks} chunks of content.\n" +
+            "Please now {question}"
+    };
+
+    // Utility to log messages conditionally based on debug mode
+    const logger = {
+        info: (msg) => {
+            if (CONFIG.DEBUG_MODE) console.log(`%c[INFO] ${msg}`, 'color: #3498db');
+        },
+        success: (msg) => {
+            if (CONFIG.DEBUG_MODE) console.log(`%c[SUCCESS] ${msg}`, 'color: #2ecc71');
+        },
+        warn: (msg) => {
+            if (CONFIG.DEBUG_MODE) console.log(`%c[WARNING] ${msg}`, 'color: #f39c12');
+        },
+        error: (msg) => {
+            console.error(`%c[ERROR] ${msg}`, 'color: #e74c3c'); // Always show errors
+        }
+    };
 
     // Show status notifications
     const showStatus = (() => {
@@ -43,32 +71,110 @@
             position: 'fixed', top: '10px', left: '50%', transform: 'translateX(-50%)',
             zIndex: '10000', padding: '10px 15px', background: '#10a37f',
             borderRadius: '8px', boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
-            color: 'white', fontFamily: 'Arial', fontSize: '14px', fontWeight: 'bold'
+            color: 'white', fontFamily: 'Arial', fontSize: '14px', fontWeight: 'bold',
+            transition: 'background-color 0.3s ease'
         });
         document.body.appendChild(el);
 
-        return (msg, isError) => {
+        return (msg, type = 'info') => {
             el.textContent = msg;
-            el.style.background = isError ? '#e34234' : '#10a37f';
+
+            // Set color based on message type
+            switch(type) {
+                case 'error':
+                    el.style.background = '#e34234';
+                    break;
+                case 'warning':
+                    el.style.background = '#f39c12';
+                    break;
+                case 'success':
+                    el.style.background = '#2ecc71';
+                    break;
+                default:
+                    el.style.background = '#10a37f';
+            }
+
+            // Log to console as well
+            if (type === 'error') logger.error(msg);
+            else if (type === 'warning') logger.warn(msg);
+            else if (type === 'success') logger.success(msg);
+            else logger.info(msg);
         };
     })();
 
     // Wait for ChatGPT UI to load
     const waitForChatGPT = () => new Promise(resolve => {
-        const interval = setInterval(() => {
-            if (document.querySelector('textarea[placeholder^="Send a message"]') ||
-                document.querySelector('div[contenteditable="true"]')) {
-                clearInterval(interval);
+        logger.info("Waiting for ChatGPT UI to load...");
+
+        const checkForElements = () => {
+            const textArea = document.querySelector('textarea[placeholder^="Send a message"]');
+            const contentEditable = document.querySelector('div[contenteditable="true"]');
+
+            if (textArea || contentEditable) {
+                logger.success("ChatGPT UI loaded");
+                return true;
+            }
+            return false;
+        };
+
+        // Check immediately
+        if (checkForElements()) {
+            resolve();
+            return;
+        }
+
+        // Set up observer to watch for UI elements
+        const observer = new MutationObserver(() => {
+            if (checkForElements()) {
+                observer.disconnect();
                 resolve();
             }
-        }, 500);
+        });
+
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+
+        // Fallback timeout
+        setTimeout(() => {
+            observer.disconnect();
+            if (checkForElements()) {
+                resolve();
+            } else {
+                // Try to resolve anyway after timeout
+                logger.warn("Timeout waiting for UI, proceeding anyway");
+                resolve();
+            }
+        }, 10000);
     });
+
+    // Get content from local server with retry
+    const fetchContentWithRetry = async () => {
+        for (let attempt = 1; attempt <= CONFIG.RETRY_ATTEMPTS; attempt++) {
+            try {
+                return await fetchContent();
+            } catch (error) {
+                if (attempt < CONFIG.RETRY_ATTEMPTS) {
+                    const delay = CONFIG.RETRY_DELAY * attempt; // Exponential backoff
+                    logger.warn(`Fetch attempt ${attempt} failed: ${error}. Retrying in ${delay/1000}s...`);
+                    showStatus(`Connection attempt ${attempt} failed. Retrying...`, 'warning');
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                } else {
+                    throw error; // Rethrow after all retries fail
+                }
+            }
+        }
+    };
 
     // Get content from local server
     const fetchContent = () => new Promise((resolve, reject) => {
+        showStatus('Connecting to Bear Notes server...');
+
         GM_xmlhttpRequest({
             method: 'GET',
             url: SERVER_URL,
+            timeout: 30000, // 30 second timeout
             onload: (response) => {
                 if (response.status === 200) {
                     try {
@@ -78,18 +184,21 @@
                             question: data.question || "analyze the complete document and provide a comprehensive response"
                         });
                     } catch (error) {
-                        reject('Error parsing content');
+                        reject(`Error parsing content: ${error.message}`);
                     }
                 } else {
-                    reject(`Server error: ${response.status}`);
+                    reject(`Server error: ${response.status} - ${response.statusText || 'Unknown error'}`);
                 }
             },
-            onerror: () => reject('Connection error')
+            onerror: (error) => reject(`Connection error: ${error.message || 'Failed to connect'}`),
+            ontimeout: () => reject('Connection timed out')
         });
     });
 
     // Find the send button using multiple strategies
     const findSendButton = () => {
+        logger.info("Looking for send button...");
+
         const buttonSelectors = [
             'button[aria-label="Send message"]',
             'button[data-testid="send-button"]',
@@ -108,10 +217,12 @@
                     (el.textContent.trim() === '' ||
                      el.textContent.toLowerCase().includes('send') ||
                      el.getAttribute('aria-label')?.toLowerCase().includes('send'))) {
+                    logger.success(`Found send button using selector: ${selector}`);
                     return el;
                 }
 
                 if (el.querySelector('svg')) {
+                    logger.success(`Found send button with SVG using selector: ${selector}`);
                     return el;
                 }
             }
@@ -122,10 +233,12 @@
         if (form) {
             const buttons = form.querySelectorAll('button');
             if (buttons.length > 0) {
+                logger.success("Found send button as last button in form");
                 return buttons[buttons.length - 1];
             }
         }
 
+        logger.error("Could not find send button");
         return null;
     };
 
@@ -133,17 +246,19 @@
     const isMessageTooLong = () => {
         // Look for any error message about length
         const errorTexts = [
-            'Message is too long',
+            'message is too long',
             'too long',
             'exceeds',
             'limit',
             'character limit'
         ];
 
+        // Check for visible error messages
         const errorElements = document.querySelectorAll('.text-red-500, .text-red-600, [role="alert"], .text-error, .error-message');
         for (const el of errorElements) {
             const text = el.textContent.toLowerCase();
             if (errorTexts.some(err => text.includes(err))) {
+                logger.warn(`Detected error message: "${el.textContent}"`);
                 return true;
             }
         }
@@ -155,6 +270,7 @@
             ((input.tagName === 'TEXTAREA' && input.value.trim().length > 0) ||
              (input.tagName !== 'TEXTAREA' && input.innerText.trim().length > 0)) &&
             (sendButton.disabled || sendButton.getAttribute('aria-disabled') === 'true')) {
+            logger.warn("Send button is disabled despite text in input");
             return true;
         }
 
@@ -163,13 +279,23 @@
 
     // Find the chat input field
     const findChatInput = () => {
+        logger.info("Looking for chat input...");
+
         const selectors = [
             'textarea[placeholder^="Send a message"]',
             'div[contenteditable="true"]',
             'textarea.w-full'
         ];
 
-        return selectors.map(s => document.querySelector(s)).find(el => el);
+        const input = selectors.map(s => document.querySelector(s)).find(el => el);
+
+        if (input) {
+            logger.success(`Found chat input: ${input.tagName}`);
+        } else {
+            logger.error("Could not find chat input");
+        }
+
+        return input;
     };
 
     // Fill the chat input with content
@@ -186,6 +312,7 @@
 
         // Trigger input event to enable the send button
         input.dispatchEvent(new Event('input', { bubbles: true }));
+        logger.info(`Filled chat input with ${content.length} characters`);
 
         return input;
     };
@@ -201,6 +328,7 @@
                 input.innerText = '';
             }
             input.dispatchEvent(new Event('input', { bubbles: true }));
+            logger.info("Cleared chat input");
         }
     };
 
@@ -215,18 +343,21 @@
                 setTimeout(() => {
                     if (isMessageTooLong()) {
                         // Message is too long, resolve with false
+                        logger.warn("Message is too long");
                         clearChatInput();
                         resolve(false);
                     } else {
                         // Try to click the send button
                         const sendButton = findSendButton();
                         if (sendButton) {
+                            logger.info("Clicking send button");
                             sendButton.click();
                             resolve(true);
                         } else {
                             // Fallback to Enter key
                             const input = findChatInput();
                             if (input) {
+                                logger.info("Using Enter key fallback");
                                 input.dispatchEvent(new KeyboardEvent('keydown', {
                                     key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true
                                 }));
@@ -252,16 +383,16 @@
     const formatMessage = (type, params) => {
         switch(type) {
             case 'initial':
-                return INITIAL_MESSAGE_TEMPLATE
+                return TEMPLATES.INITIAL_MESSAGE
                     .replace('{totalChunks}', params.totalChunks)
                     .replace('{question}', params.question || "analyze the complete document and provide a comprehensive response");
             case 'chunk':
-                return CHUNK_MESSAGE_TEMPLATE
+                return TEMPLATES.CHUNK_MESSAGE
                     .replace(/{currentChunk}/g, params.currentChunk)
                     .replace(/{totalChunks}/g, params.totalChunks)
                     .replace('{chunkContent}', params.chunkContent);
             case 'final':
-                return FINAL_MESSAGE_TEMPLATE
+                return TEMPLATES.FINAL_MESSAGE
                     .replace('{totalChunks}', params.totalChunks)
                     .replace('{question}', params.question || "analyze the complete document and provide a comprehensive response");
             default:
@@ -272,21 +403,27 @@
     // Process content in chunks with improved formatting
     const processContent = async (content, question = "analyze the complete document and provide a comprehensive response") => {
         let remainingContent = content;
-        let chunkSize = CHUNK_SIZE_INITIAL;
+        let chunkSize = CONFIG.CHUNK_SIZE_INITIAL;
         let actualChunkNum = 0;
         let estimatedTotalChunks = estimateTotalChunks(content, chunkSize);
         let needsChunking = estimatedTotalChunks > 1;
 
         // If content fits in one message, send it directly
         if (!needsChunking) {
-            showStatus('Content fits in a single message, sending...');
-            await submitMessage(content);
+            showStatus('Content fits in a single message, sending...', 'info');
+            logger.info("Content will be sent as a single message");
+
+            // For short content, combine the question with the content
+            const formattedContent = `${question}\n\n${content}`;
+            await submitMessage(formattedContent);
             return await getChatGPTResponse();
         }
 
         // Send initial message explaining the chunking process
-        showStatus('Sending initial chunking message with the question...');
+        showStatus(`Preparing to send document in ${estimatedTotalChunks} chunks...`, 'info');
         const initialMessage = formatMessage('initial', { totalChunks: estimatedTotalChunks, question: question });
+
+        logger.info(`Sending initial message: "${initialMessage.substring(0, 100)}..."`);
         await submitMessage(initialMessage);
         await waitForResponse();
 
@@ -296,7 +433,8 @@
             actualChunkNum++;
             const isLastChunk = (remainingContent.length <= chunkSize);
 
-            showStatus(`Processing chunk ${actualChunkNum}/${estimatedTotalChunks}... (${remainingContent.length} chars remaining)`);
+            showStatus(`Processing chunk ${actualChunkNum}/${estimatedTotalChunks}... (${remainingContent.length} chars remaining)`, 'info');
+            logger.info(`Processing chunk ${actualChunkNum}/${estimatedTotalChunks}, ${remainingContent.length} chars remaining`);
 
             // Extract the next chunk
             let currentChunk = remainingContent.substring(0, chunkSize);
@@ -310,24 +448,33 @@
                     totalChunks: estimatedTotalChunks,
                     chunkContent: currentChunk
                 }) + "\n\n" + formatMessage('final', { totalChunks: actualChunkNum, question: question });
+                logger.info(`Formatted last chunk (${actualChunkNum}) with completion message`);
             } else {
                 chunkMessage = formatMessage('chunk', {
                     currentChunk: actualChunkNum,
                     totalChunks: estimatedTotalChunks,
                     chunkContent: currentChunk
                 });
+                logger.info(`Formatted chunk ${actualChunkNum}`);
             }
 
             // Try to submit the chunk, reduce size if too large
             let success = false;
-            while (!success && chunkSize >= CHUNK_SIZE_MIN) {
+            let sizeReductionAttempts = 0;
+
+            while (!success && chunkSize >= CONFIG.CHUNK_SIZE_MIN) {
                 try {
+                    logger.info(`Attempting to submit chunk with size ${chunkSize}`);
                     success = await submitMessage(chunkMessage);
 
                     if (!success) {
                         // Reduce chunk size and try again
-                        chunkSize = Math.max(Math.floor(chunkSize * CHUNK_REDUCTION_FACTOR), CHUNK_SIZE_MIN);
-                        showStatus(`Chunk too large, reducing to ${chunkSize} chars...`);
+                        sizeReductionAttempts++;
+                        const previousSize = chunkSize;
+                        chunkSize = Math.max(Math.floor(chunkSize * CONFIG.CHUNK_REDUCTION_FACTOR), CONFIG.CHUNK_SIZE_MIN);
+
+                        showStatus(`Chunk too large, reducing size from ${previousSize} to ${chunkSize} chars...`, 'warning');
+                        logger.warn(`Chunk too large, reducing from ${previousSize} to ${chunkSize} chars (attempt ${sizeReductionAttempts})`);
 
                         // We need to recalculate the total chunks estimate
                         estimatedTotalChunks = Math.max(
@@ -355,21 +502,25 @@
                             });
                         }
 
+                        // Update the message to send
+                        chunkMessage = updatedChunkMessage;
+
                         // Try again with the smaller chunk
                         clearChatInput();
-                        success = await submitMessage(updatedChunkMessage);
                     }
                 } catch (err) {
-                    console.error('Error submitting chunk:', err);
+                    logger.error(`Error submitting chunk: ${err.message || err}`);
                     throw err;
                 }
             }
 
             if (!success) {
-                throw new Error(`Failed to submit chunk even at minimum size ${CHUNK_SIZE_MIN}`);
+                showStatus(`Failed to submit chunk even at minimum size ${CONFIG.CHUNK_SIZE_MIN}`, 'error');
+                throw new Error(`Failed to submit chunk even at minimum size ${CONFIG.CHUNK_SIZE_MIN}`);
             }
 
             // Wait for ChatGPT to process the chunk
+            showStatus(`Waiting for ChatGPT to process chunk ${actualChunkNum}...`, 'info');
             await waitForResponse();
 
             // Store the processed chunk for tracking
@@ -380,29 +531,51 @@
 
             // If there's more content, wait briefly before continuing
             if (remainingContent.length > 0) {
-                showStatus('Preparing next chunk...');
+                showStatus(`Preparing next chunk...`, 'info');
                 await new Promise(resolve => setTimeout(resolve, 1000));
             }
         }
 
         // For the last chunk we already sent the "ALL PARTS SENT" message
         // So we just need to return the final response
+        showStatus(`All chunks sent. Getting final response...`, 'success');
         return await getChatGPTResponse();
     };
 
     // Check if ChatGPT is still generating a response
     const isThinking = () => {
-        return document.querySelector('.result-thinking') !== null ||
-               document.querySelector('[role="progressbar"]') !== null ||
-               document.querySelector('.animate-spin') !== null ||
-               document.querySelector('[data-state="loading"]') !== null;
+        const thinkingIndicators = [
+            '.result-thinking',
+            '[role="progressbar"]',
+            '.animate-spin',
+            '[data-state="loading"]',
+            '.text-token-text-secondary' // For new UI versions
+        ];
+
+        for (const selector of thinkingIndicators) {
+            if (document.querySelector(selector)) {
+                return true;
+            }
+        }
+
+        return false;
     };
 
     // Get current response text from ChatGPT
     const getResponseText = () => {
-        const responses = document.querySelectorAll('[data-message-author-role="assistant"]');
-        if (!responses.length) return '';
-        return responses[responses.length - 1].textContent;
+        const selectors = [
+            '[data-message-author-role="assistant"]',
+            '.markdown' // For newer UI versions
+        ];
+
+        for (const selector of selectors) {
+            const elements = document.querySelectorAll(selector);
+            if (elements.length) {
+                return elements[elements.length - 1].textContent;
+            }
+        }
+
+        return '';
     };
 
     // Wait for ChatGPT to finish responding
@@ -412,26 +585,42 @@
         let stableCount = 0;
         const MAX_WAIT_TIME = 300000; // 5 minutes
         const startTime = Date.now();
+        let checkCount = 0;
 
         const checkResponse = setInterval(() => {
+            checkCount++;
+
+            // Periodically update status with wait time
+            if (checkCount % 20 === 0) { // Every 10 seconds (20 * 500ms)
+                const waitedTime = Math.floor((Date.now() - startTime) / 1000);
+                showStatus(`Waiting for ChatGPT (${waitedTime}s)...`, 'info');
+            }
+
             // Check if maximum wait time exceeded
             if (Date.now() - startTime > MAX_WAIT_TIME) {
                 clearInterval(checkResponse);
-                showStatus('Maximum wait time exceeded, capturing current response');
+                showStatus('Maximum wait time exceeded, capturing current response', 'warning');
+                logger.warn(`Maximum wait time of ${MAX_WAIT_TIME}ms exceeded`);
                 setTimeout(resolve, 1000);
                 return;
             }
 
             // Check if response has started
-            if (isThinking() || document.querySelectorAll('[data-message-author-role="assistant"]').length > 0) {
+            const thinking = isThinking();
+            const hasResponses = document.querySelectorAll('[data-message-author-role="assistant"]').length > 0;
+
+            if (thinking || hasResponses) {
                 started = true;
                 const currentResponseText = getResponseText();
 
                 // Check if response has stabilized
                 if (currentResponseText === lastResponseText) {
                     stableCount++;
-                    if (!isThinking() && stableCount >= 10) {
+
+                    if (!thinking && stableCount >= 10) {
                         clearInterval(checkResponse);
+                        showStatus('Response complete, continuing...', 'success');
+                        logger.success("Response stabilized and complete");
                         setTimeout(resolve, 2000);
                     }
                 } else {
@@ -445,7 +634,8 @@
         setTimeout(() => {
             if (!started) {
                 clearInterval(checkResponse);
-                showStatus('Timeout waiting for response', true);
+                showStatus('Timeout waiting for response', 'error');
+                logger.warn("Timeout waiting for response to start");
                 resolve();
             }
         }, 30000);
@@ -453,44 +643,99 @@
 
     // Get the final response from ChatGPT
     const getChatGPTResponse = () => {
+        logger.info("Getting final ChatGPT response");
+
         const responses = document.querySelectorAll('[data-message-author-role="assistant"]');
-        if (!responses.length) throw new Error('No ChatGPT response found');
-        return responses[responses.length - 1].textContent;
+        if (!responses.length) {
+            logger.error("No ChatGPT response found");
+            throw new Error('No ChatGPT response found');
+        }
+
+        const responseText = responses[responses.length - 1].textContent;
+        logger.info(`Found response with ${responseText.length} characters`);
+        return responseText;
+    };
+
+    // Send response back to the local server with retry
+    const sendResponseToServerWithRetry = async (response) => {
+        for (let attempt = 1; attempt <= CONFIG.RETRY_ATTEMPTS; attempt++) {
+            try {
+                await sendResponseToServer(response);
+                return;
+            } catch (error) {
+                if (attempt < CONFIG.RETRY_ATTEMPTS) {
+                    const delay = CONFIG.RETRY_DELAY * attempt; // Exponential backoff
+                    showStatus(`Retrying to send response (attempt ${attempt})...`, 'warning');
+                    logger.warn(`Send response attempt ${attempt} failed: ${error}. Retrying in ${delay/1000}s...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                } else {
+                    throw error; // Rethrow after all retries fail
+                }
+            }
+        }
     };
 
     // Send response back to the local server
     const sendResponseToServer = response => new Promise((resolve, reject) => {
+        showStatus('Sending response back to server...', 'info');
+
         GM_xmlhttpRequest({
             method: 'POST',
             url: RESPONSE_URL,
             data: JSON.stringify({ response }),
             headers: { 'Content-Type': 'application/json' },
+            timeout: 30000, // 30 second timeout
             onload: (response) => {
-                if (response.status === 200) resolve();
-                else reject(`Server error: ${response.status}`);
+                if (response.status === 200) {
+                    logger.success("Response sent successfully");
+                    resolve();
+                } else {
+                    reject(`Server error: ${response.status} - ${response.statusText || 'Unknown error'}`);
+                }
             },
-            onerror: () => reject('Connection error')
+            onerror: (error) => reject(`Connection error: ${error.message || 'Failed to connect'}`),
+            ontimeout: () => reject('Connection timed out')
         });
     });
 
     // Main workflow
     const run = async () => {
         try {
-            await waitForChatGPT();
-            showStatus('Fetching content from Bear Notes...');
-            const { content, question } = await fetchContent();
+            // Store start time for performance tracking
+            const startTime = Date.now();
 
-            showStatus('Processing content...');
+            // Wait for ChatGPT UI to load
+            showStatus('Waiting for ChatGPT UI to load...', 'info');
+            await waitForChatGPT();
+
+            // Fetch content from server
+            showStatus('Fetching content from Bear Notes...', 'info');
+            const { content, question } = await fetchContentWithRetry();
+
+            // Process content and get response
+            showStatus('Processing content...', 'info');
             const response = await processContent(content, question);
 
-            showStatus('Sending response back to server...');
-            await sendResponseToServer(response);
+            // Send response back to server
+            await sendResponseToServerWithRetry(response);
 
-            showStatus('Done! Closing tab...');
-            setTimeout(() => window.close(), 2000);
+            // Calculate total time
+            const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
+            showStatus(`Done! Processed in ${totalTime}s. Closing tab...`, 'success');
+
+            // Close tab after a delay
+            setTimeout(() => window.close(), CONFIG.AUTO_CLOSE_DELAY);
         } catch (err) {
-            showStatus(`Error: ${err.message || err}`, true);
-            console.error('Bear to ChatGPT error:', err);
+            const errorMsg = err.message || err.toString() || 'Unknown error';
+            showStatus(`Error: ${errorMsg}`, 'error');
+            logger.error(`Bear to ChatGPT error: ${errorMsg}`);
+
+            // Try to send error to server
+            try {
+                await sendResponseToServer(`ERROR: ${errorMsg}`);
+            } catch (e) {
+                logger.error(`Failed to send error to server: ${e}`);
+            }
         }
     };
 
