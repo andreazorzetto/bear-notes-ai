@@ -120,8 +120,9 @@ class BearDB:
 class LocalServer:
     """HTTP server to provide content to the automation client and receive responses"""
 
-    def __init__(self, prompt_content, port=8765, timeout=600):
+    def __init__(self, prompt_content, prompt_question, port=8765, timeout=600):
         self.prompt_content = prompt_content
+        self.prompt_question = prompt_question
         self.port = port
         self.timeout = timeout  # Maximum runtime in seconds
         self.chatgpt_response = None
@@ -187,6 +188,7 @@ class LocalServer:
     def _create_handler(self):
         """Create and return the HTTP request handler class"""
         prompt_content = self.prompt_content
+        prompt_question = self.prompt_question
         server_instance = self  # Reference to the server instance
 
         class CustomHandler(http.server.SimpleHTTPRequestHandler):
@@ -199,6 +201,7 @@ class LocalServer:
 
                     response = json.dumps({
                         'content': prompt_content,
+                        'question': prompt_question,
                         'timestamp': time.time()
                     })
 
@@ -272,18 +275,14 @@ class NotesProcessor:
 
     @staticmethod
     def format_prompt(notes, question):
-        """Format notes and question for ChatGPT prompt"""
+        """Format notes content, keeping question separate for the userscript"""
         combined_content = "\n\n===== NOTE SEPARATOR =====\n\n".join(
             [f"NOTE: {note['title']}\n\n{note['content']}" for note in notes]
         )
 
-        return f"""Question: {question}
-
-Document content:
-
-{combined_content}
-
-Please analyze the above document(s) and answer the question thoroughly."""
+        # Return just the content without the question
+        # The question will be sent separately in the JSON
+        return combined_content
 
 
 def main():
@@ -296,7 +295,7 @@ def main():
     search_group.add_argument("-u", "--url", help="Bear callback URL")
 
     # Other options
-    parser.add_argument("-q", "--question", help="Question to ask about the notes")
+    parser.add_argument("-q", "--question", help="Question to ask about the notes", required=True)
     parser.add_argument("-l", "--list", action="store_true", help="Just list matching notes, don't process")
     parser.add_argument("--limit", type=int, help="Limit the number of notes to process")
     parser.add_argument("-y", "--yes", action="store_true", help="Process notes without confirmation")
@@ -308,9 +307,6 @@ def main():
     # Validate arguments
     if not (args.tag or args.keyword or args.url):
         parser.error("At least one search option (--tag, --keyword, or --url) is required")
-
-    if not args.list and not args.question:
-        parser.error("--question is required unless --list is used")
 
     # Process notes
     try:
@@ -370,14 +366,15 @@ def main():
             return
 
     # Process the notes
-    prompt = NotesProcessor.format_prompt(matching_notes, args.question)
+    content = NotesProcessor.format_prompt(matching_notes, args.question)
+    question = args.question  # Keep question separate from content
 
     # Open ChatGPT in the browser
     print("\nOpening ChatGPT in your default browser...")
     webbrowser.open("https://chatgpt.com/")
 
     # Start the local server to provide the content
-    server = LocalServer(prompt, port=args.port, timeout=args.timeout)
+    server = LocalServer(content, question, port=args.port, timeout=args.timeout)
     print(f"\nStarting local server on port {args.port}...")
     print("Starting the automation process. The server is ready to serve content and receive responses.")
     response = server.start()

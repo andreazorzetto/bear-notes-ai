@@ -24,7 +24,7 @@
     // Improved chunking strategy templates
     const INITIAL_MESSAGE_TEMPLATE =
         "I'm sending a document in {totalChunks} chunks. Do not respond or process until I say 'ALL PARTS SENT'. " +
-        "After all parts are received, please analyze the complete document and provide a comprehensive response.";
+        "After all parts are received, please {question}";
 
     const CHUNK_MESSAGE_TEMPLATE =
         "Chunk {currentChunk}/{totalChunks}:\n\n" +
@@ -34,7 +34,7 @@
     const FINAL_MESSAGE_TEMPLATE =
         "ALL PARTS SENT.\n" +
         "To confirm, I've sent {totalChunks} chunks of content.\n" +
-        "Please now analyze the complete document and provide a comprehensive response.";
+        "Please now {question}";
 
     // Show status notifications
     const showStatus = (() => {
@@ -73,7 +73,10 @@
                 if (response.status === 200) {
                     try {
                         const data = JSON.parse(response.responseText);
-                        resolve(data.content);
+                        resolve({
+                            content: data.content,
+                            question: data.question || "analyze the complete document and provide a comprehensive response"
+                        });
                     } catch (error) {
                         reject('Error parsing content');
                     }
@@ -249,21 +252,25 @@
     const formatMessage = (type, params) => {
         switch(type) {
             case 'initial':
-                return INITIAL_MESSAGE_TEMPLATE.replace('{totalChunks}', params.totalChunks);
+                return INITIAL_MESSAGE_TEMPLATE
+                    .replace('{totalChunks}', params.totalChunks)
+                    .replace('{question}', params.question || "analyze the complete document and provide a comprehensive response");
             case 'chunk':
                 return CHUNK_MESSAGE_TEMPLATE
                     .replace(/{currentChunk}/g, params.currentChunk)
                     .replace(/{totalChunks}/g, params.totalChunks)
                     .replace('{chunkContent}', params.chunkContent);
             case 'final':
-                return FINAL_MESSAGE_TEMPLATE.replace('{totalChunks}', params.totalChunks);
+                return FINAL_MESSAGE_TEMPLATE
+                    .replace('{totalChunks}', params.totalChunks)
+                    .replace('{question}', params.question || "analyze the complete document and provide a comprehensive response");
             default:
                 return '';
         }
     };
 
     // Process content in chunks with improved formatting
-    const processContent = async (content) => {
+    const processContent = async (content, question = "analyze the complete document and provide a comprehensive response") => {
         let remainingContent = content;
         let chunkSize = CHUNK_SIZE_INITIAL;
         let actualChunkNum = 0;
@@ -278,8 +285,8 @@
         }
 
         // Send initial message explaining the chunking process
-        showStatus('Sending initial chunking message...');
-        const initialMessage = formatMessage('initial', { totalChunks: estimatedTotalChunks });
+        showStatus('Sending initial chunking message with the question...');
+        const initialMessage = formatMessage('initial', { totalChunks: estimatedTotalChunks, question: question });
         await submitMessage(initialMessage);
         await waitForResponse();
 
@@ -302,7 +309,7 @@
                     currentChunk: actualChunkNum,
                     totalChunks: estimatedTotalChunks,
                     chunkContent: currentChunk
-                }) + "\n\n" + formatMessage('final', { totalChunks: actualChunkNum });
+                }) + "\n\n" + formatMessage('final', { totalChunks: actualChunkNum, question: question });
             } else {
                 chunkMessage = formatMessage('chunk', {
                     currentChunk: actualChunkNum,
@@ -339,7 +346,7 @@
                                 currentChunk: actualChunkNum,
                                 totalChunks: estimatedTotalChunks,
                                 chunkContent: currentChunk
-                            }) + "\n\n" + formatMessage('final', { totalChunks: actualChunkNum });
+                            }) + "\n\n" + formatMessage('final', { totalChunks: actualChunkNum, question: question });
                         } else {
                             updatedChunkMessage = formatMessage('chunk', {
                                 currentChunk: actualChunkNum,
@@ -471,10 +478,10 @@
         try {
             await waitForChatGPT();
             showStatus('Fetching content from Bear Notes...');
-            const content = await fetchContent();
+            const { content, question } = await fetchContent();
 
             showStatus('Processing content...');
-            const response = await processContent(content);
+            const response = await processContent(content, question);
 
             showStatus('Sending response back to server...');
             await sendResponseToServer(response);
