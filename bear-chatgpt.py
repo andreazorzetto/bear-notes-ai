@@ -2,7 +2,6 @@
 """
 Bear Notes to ChatGPT Integration
 Send Bear notes directly to ChatGPT web interface and receive automated responses
-with improved console formatting and enhanced features
 """
 
 import sqlite3
@@ -17,32 +16,7 @@ import http.server
 import socketserver
 import socket
 import threading
-import signal
-import sys
-import platform
 from pathlib import Path
-from datetime import datetime
-
-# Check for optional dependencies for enhanced features
-try:
-    import colorama
-    from colorama import Fore, Back, Style
-
-    colorama.init()
-    HAS_COLORS = True
-except ImportError:
-    HAS_COLORS = False
-
-try:
-    from rich.console import Console
-    from rich.markdown import Markdown
-    from rich.panel import Panel
-    from rich.table import Table
-
-    HAS_RICH = True
-    console = Console()
-except ImportError:
-    HAS_RICH = False
 
 
 class BearDB:
@@ -143,136 +117,6 @@ class BearDB:
         return urllib.parse.unquote(match.group(1))
 
 
-class ConsoleFormatter:
-    """Format text output for the terminal with better visual appearance"""
-
-    @staticmethod
-    def print_header(text, width=80):
-        """Print a header with decorative elements"""
-        if HAS_RICH:
-            console.print(Panel(text, style="bold blue", expand=False))
-        elif HAS_COLORS:
-            print(f"\n{Fore.BLUE}{Style.BRIGHT}" + "=" * width)
-            print(text.center(width))
-            print("=" * width + f"{Style.RESET_ALL}\n")
-        else:
-            print("\n" + "=" * width)
-            print(text.center(width))
-            print("=" * width + "\n")
-
-    @staticmethod
-    def print_subheader(text, width=80):
-        """Print a subheader with decorative elements"""
-        if HAS_RICH:
-            console.print(f"[bold cyan]{text}[/bold cyan]")
-        elif HAS_COLORS:
-            print(f"\n{Fore.CYAN}{Style.BRIGHT}" + text)
-            print("-" * len(text) + f"{Style.RESET_ALL}")
-        else:
-            print("\n" + text)
-            print("-" * len(text))
-
-    @staticmethod
-    def print_note_info(note, index=None):
-        """Print formatted note information"""
-        if HAS_RICH:
-            table = Table(show_header=False, box=None, padding=(0, 1))
-            table.add_column("Index", style="dim", width=4)
-            table.add_column("Details", style="green")
-            prefix = f"{index}. " if index is not None else ""
-            table.add_row("", f"[bold green]{prefix}{note['title']}[/bold green]")
-            table.add_row("", f"[dim]Modified: {note['date_modified']}[/dim]")
-            console.print(table)
-        elif HAS_COLORS:
-            prefix = f"{index}. " if index is not None else ""
-            print(f"{Fore.GREEN}{Style.BRIGHT}{prefix}{note['title']}{Style.RESET_ALL}")
-            print(f"{Fore.WHITE}{Style.DIM}Modified: {note['date_modified']}{Style.RESET_ALL}")
-        else:
-            prefix = f"{index}. " if index is not None else ""
-            print(f"{prefix}{note['title']}")
-            print(f"Modified: {note['date_modified']}")
-
-    @staticmethod
-    def print_success(text):
-        """Print success message"""
-        if HAS_RICH:
-            console.print(f"[bold green]✓ {text}[/bold green]")
-        elif HAS_COLORS:
-            print(f"{Fore.GREEN}{Style.BRIGHT}✓ {text}{Style.RESET_ALL}")
-        else:
-            print(f"✓ {text}")
-
-    @staticmethod
-    def print_error(text):
-        """Print error message"""
-        if HAS_RICH:
-            console.print(f"[bold red]✗ {text}[/bold red]")
-        elif HAS_COLORS:
-            print(f"{Fore.RED}{Style.BRIGHT}✗ {text}{Style.RESET_ALL}")
-        else:
-            print(f"✗ {text}")
-
-    @staticmethod
-    def print_warning(text):
-        """Print warning message"""
-        if HAS_RICH:
-            console.print(f"[bold yellow]⚠ {text}[/bold yellow]")
-        elif HAS_COLORS:
-            print(f"{Fore.YELLOW}{Style.BRIGHT}⚠ {text}{Style.RESET_ALL}")
-        else:
-            print(f"⚠ {text}")
-
-    @staticmethod
-    def print_info(text):
-        """Print info message"""
-        if HAS_RICH:
-            console.print(f"[bold blue]ℹ {text}[/bold blue]")
-        elif HAS_COLORS:
-            print(f"{Fore.BLUE}{Style.BRIGHT}ℹ {text}{Style.RESET_ALL}")
-        else:
-            print(f"ℹ {text}")
-
-    @staticmethod
-    def format_chatgpt_response(response):
-        """Format ChatGPT response for display in console, preserving markdown if possible"""
-        if HAS_RICH:
-            try:
-                # Try to render as markdown
-                md = Markdown(response)
-                console.print(Panel(md, title="ChatGPT Response", border_style="green", expand=False))
-            except Exception:
-                # Fallback to plain text if markdown parsing fails
-                console.print(Panel(response, title="ChatGPT Response", border_style="green", expand=False))
-        elif HAS_COLORS:
-            print(f"\n{Fore.GREEN}{Style.BRIGHT}ChatGPT Response:{Style.RESET_ALL}")
-            print(f"{Fore.WHITE}{'-' * 80}{Style.RESET_ALL}")
-            print(response)
-            print(f"{Fore.WHITE}{'-' * 80}{Style.RESET_ALL}")
-        else:
-            print("\nChatGPT Response:")
-            print("-" * 80)
-            print(response)
-            print("-" * 80)
-
-    @staticmethod
-    def format_progress_bar(current, total, width=50):
-        """Display a progress bar"""
-        percent = current / total
-        arrow = '■' * int(width * percent)
-        spaces = ' ' * (width - len(arrow))
-
-        if HAS_RICH:
-            console.print(f"[bold cyan]Progress: [{arrow}{spaces}] {int(percent * 100)}%[/bold cyan]", end='\r')
-        elif HAS_COLORS:
-            print(f"{Fore.CYAN}{Style.BRIGHT}Progress: [{arrow}{spaces}] {int(percent * 100)}%{Style.RESET_ALL}",
-                  end='\r')
-        else:
-            print(f"Progress: [{arrow}{spaces}] {int(percent * 100)}%", end='\r')
-
-        if current == total:
-            print()
-
-
 class LocalServer:
     """HTTP server to provide content to the automation client and receive responses"""
 
@@ -284,11 +128,6 @@ class LocalServer:
         self.chatgpt_response = None
         self.response_received = False
         self.server = None
-        self.start_time = None
-        self.shutdown_requested = False
-
-        # Set up interrupt handler
-        signal.signal(signal.SIGINT, self._handle_interrupt)
 
     def start(self):
         """Start the local server and wait for a response"""
@@ -298,64 +137,35 @@ class LocalServer:
         socketserver.TCPServer.allow_reuse_address = True
 
         try:
-            # Try to find an available port if the specified one is in use
-            port_to_use = self.port
-            max_port_attempts = 5
+            self.server = socketserver.TCPServer(("", self.port), handler)
 
-            for attempt in range(max_port_attempts):
-                try:
-                    self.server = socketserver.TCPServer(("", port_to_use), handler)
-                    break
-                except OSError as e:
-                    if "Address already in use" in str(e) and attempt < max_port_attempts - 1:
-                        port_to_use += 1
-                        ConsoleFormatter.print_warning(f"Port {self.port + attempt} is in use, trying {port_to_use}...")
-                    else:
-                        raise
-
-            if port_to_use != self.port:
-                self.port = port_to_use
-                ConsoleFormatter.print_success(f"Using port {self.port} instead")
-
-            ConsoleFormatter.print_header(f"Bear Notes to ChatGPT Server")
-            ConsoleFormatter.print_info(f"Server started at http://localhost:{self.port}")
-            ConsoleFormatter.print_info("Waiting for the client to fetch the content...")
-            ConsoleFormatter.print_info("Please navigate to https://chatgpt.com in your browser")
-            ConsoleFormatter.print_info("The server will automatically stop after receiving the response")
-            ConsoleFormatter.print_info("(You can also press Ctrl+C to stop the server manually)")
+            print(f"\nServer started at http://localhost:{self.port}")
+            print("Waiting for the client to fetch the content...")
+            print("Please navigate to https://chatgpt.com in your browser")
+            print("The server will automatically stop after receiving the response")
+            print("(You can also press Ctrl+C to stop the server manually)")
 
             # Set a short timeout to allow checking for response_received flag
             self.server.timeout = 1.0
 
             # Set maximum runtime
-            self.start_time = time.time()
-            last_status_time = self.start_time
-            status_interval = 10  # Show status every 10 seconds
+            start_time = time.time()
 
             # Continue serving until we receive a response or timeout
-            while not self.response_received and not self.shutdown_requested:
-                if time.time() - self.start_time > self.timeout:
-                    ConsoleFormatter.print_warning(f"\nTimeout after {self.timeout} seconds. Shutting down server...")
+            while not self.response_received:
+                if time.time() - start_time > self.timeout:
+                    print(f"\nTimeout after {self.timeout} seconds. Shutting down server...")
                     break
-
-                # Show periodic status updates
-                current_time = time.time()
-                if current_time - last_status_time >= status_interval:
-                    elapsed = int(current_time - self.start_time)
-                    remaining = self.timeout - elapsed
-                    ConsoleFormatter.format_progress_bar(elapsed, self.timeout)
-                    last_status_time = current_time
-
                 self.server.handle_request()
 
         except KeyboardInterrupt:
-            ConsoleFormatter.print_warning("\nServer stopped manually.")
+            print("\nServer stopped manually.")
         except OSError as e:
             if "Address already in use" in str(e):
-                ConsoleFormatter.print_error(f"\nError: All attempted ports are in use.")
-                ConsoleFormatter.print_info("Another instance may be running. Please wait a moment and try again.")
+                print(f"\nError: Port {self.port} is already in use.")
+                print("Another instance may be running. Please wait a moment and try again.")
             else:
-                ConsoleFormatter.print_error(f"\nServer error: {e}")
+                print(f"\nServer error: {e}")
         finally:
             if self.server:
                 self.server.server_close()
@@ -368,17 +178,12 @@ class LocalServer:
 
     def _print_formatted_response(self):
         """Print the response in a nicely formatted way"""
-        ConsoleFormatter.format_chatgpt_response(self.chatgpt_response)
-
-        # Calculate and display timing information
-        if self.start_time:
-            elapsed_time = time.time() - self.start_time
-            ConsoleFormatter.print_info(f"Response received in {elapsed_time:.2f} seconds")
-
-    def _handle_interrupt(self, sig, frame):
-        """Handle keyboard interrupt gracefully"""
-        self.shutdown_requested = True
-        ConsoleFormatter.print_warning("\nShutdown requested. Cleaning up...")
+        separator = "=" * 80
+        print(f"\n{separator}")
+        print("CHATGPT RESPONSE:")
+        print("-" * 80)
+        print(self.chatgpt_response)  # Print the response, preserving formatting
+        print(f"{separator}")
 
     def _create_handler(self):
         """Create and return the HTTP request handler class"""
@@ -401,7 +206,7 @@ class LocalServer:
                     })
 
                     self.wfile.write(response.encode())
-                    ConsoleFormatter.print_success("Content served successfully! Waiting for response...")
+                    print("Content served successfully! Waiting for response...")
                 else:
                     self.send_response(404)
                     self.end_headers()
@@ -427,7 +232,7 @@ class LocalServer:
                         self.end_headers()
 
                         self.wfile.write(json.dumps({'success': True}).encode())
-                        ConsoleFormatter.print_success("Response received! Server will stop shortly...")
+                        print("Response received! Server will stop shortly...")
 
                         # Graceful shutdown after a short delay
                         def shutdown_server():
@@ -446,7 +251,6 @@ class LocalServer:
                             'success': False,
                             'error': str(e)
                         }).encode())
-                        ConsoleFormatter.print_error(f"Error processing response: {e}")
                 else:
                     self.send_response(404)
                     self.end_headers()
@@ -480,97 +284,6 @@ class NotesProcessor:
         # The question will be sent separately in the JSON
         return combined_content
 
-    @staticmethod
-    def save_response_to_file(response, question, notes):
-        """Save the response and context to a file"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        # Create a more descriptive filename based on the question
-        # Remove any characters that aren't safe for filenames
-        question_slug = re.sub(r'[^\w\s-]', '', question)[:40].strip().replace(' ', '_')
-        filename = f"chatgpt_response_{question_slug}_{timestamp}.md"
-
-        with open(filename, 'w') as f:
-            # Write header with metadata
-            f.write(f"# ChatGPT Response: {question}\n\n")
-            f.write(f"*Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n\n")
-
-            # Write the question
-            f.write("## Question\n\n")
-            f.write(f"{question}\n\n")
-
-            # Write the response
-            f.write("## Response\n\n")
-            f.write(f"{response}\n\n")
-
-            # Write the source note information
-            f.write("## Source Notes\n\n")
-            for i, note in enumerate(notes, 1):
-                f.write(f"### {i}. {note['title']}\n\n")
-                f.write(f"*Last Modified: {note['date_modified']}*\n\n")
-                # Only write a small excerpt of the content to keep the file manageable
-                content_excerpt = note['content'][:500]
-                if len(note['content']) > 500:
-                    content_excerpt += "...\n[Content truncated]"
-                f.write(f"```\n{content_excerpt}\n```\n\n")
-
-        return filename
-
-
-def open_browser_with_retry(url, max_retries=3, retry_delay=2):
-    """Open the browser with retry logic"""
-    for attempt in range(max_retries):
-        try:
-            webbrowser.open(url)
-            return True
-        except Exception as e:
-            if attempt < max_retries - 1:
-                ConsoleFormatter.print_warning(f"Failed to open browser: {e}. Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
-            else:
-                ConsoleFormatter.print_error(f"Failed to open browser after {max_retries} attempts: {e}")
-                return False
-
-
-def check_environment():
-    """Check if all requirements are met and provide suggestions for better experience"""
-    issues = []
-    suggestions = []
-
-    # Check operating system
-    if platform.system() != "Darwin":
-        issues.append("This script is designed for macOS where Bear Notes is available.")
-
-    # Check if Bear is installed
-    bear_app_path = "/Applications/Bear.app"
-    if not os.path.exists(bear_app_path):
-        issues.append("Bear Notes app not found in /Applications. Is it installed?")
-
-    # Check for enhancement libraries
-    if not HAS_COLORS:
-        suggestions.append("Install 'colorama' for colored console output: pip install colorama")
-    if not HAS_RICH:
-        suggestions.append("Install 'rich' for enhanced console formatting: pip install rich")
-
-    # Check for Tampermonkey extension
-    # (This is a user check, we can't programmatically check browser extensions)
-    suggestions.append("Ensure Tampermonkey browser extension is installed and the userscript is loaded")
-
-    # Print any issues
-    if issues:
-        ConsoleFormatter.print_header("Environment Check - Issues Found")
-        for issue in issues:
-            ConsoleFormatter.print_error(issue)
-
-    # Print suggestions
-    if suggestions:
-        ConsoleFormatter.print_subheader("Suggestions for better experience")
-        for suggestion in suggestions:
-            ConsoleFormatter.print_info(suggestion)
-
-    # Return True if no critical issues, False otherwise
-    return len(issues) == 0
-
 
 def main():
     parser = argparse.ArgumentParser(description="Send Bear notes to ChatGPT")
@@ -588,16 +301,8 @@ def main():
     parser.add_argument("-y", "--yes", action="store_true", help="Process notes without confirmation")
     parser.add_argument("--port", type=int, default=8765, help="Port for the local server")
     parser.add_argument("--timeout", type=int, default=600, help="Maximum server runtime in seconds")
-    parser.add_argument("--save", action="store_true", help="Save the response to a file")
-    parser.add_argument("--check", action="store_true", help="Check environment for proper setup")
-    parser.add_argument("--version", action="version", version="Bear to ChatGPT v2.0")
 
     args = parser.parse_args()
-
-    # Run environment check if requested
-    if args.check:
-        check_environment()
-        return
 
     # Validate arguments
     if not (args.tag or args.keyword or args.url):
@@ -605,8 +310,6 @@ def main():
 
     # Process notes
     try:
-        ConsoleFormatter.print_header("Bear Notes to ChatGPT")
-
         bear_db = BearDB()
         matching_notes = []
 
@@ -619,45 +322,37 @@ def main():
                 'content': content,
                 'date_modified': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
             })
-            ConsoleFormatter.print_success(f"Found note: {title}")
+            print(f"Found note: {title}")
         else:
             # Search for notes
-            ConsoleFormatter.print_subheader("Searching Notes")
-
-            search_desc = []
-            if args.tag:
-                search_desc.append(f"tag '#{args.tag}'")
-            if args.keyword:
-                search_desc.append(f"keyword '{args.keyword}'")
-
-            ConsoleFormatter.print_info(f"Searching for notes with {' and '.join(search_desc)}...")
-
             notes = bear_db.search_notes(tag=args.tag, keyword=args.keyword, limit=args.limit)
             matching_notes.extend(notes)
 
             # Print search results
-            if notes:
-                ConsoleFormatter.print_success(f"Found {len(notes)} matching notes")
-            else:
-                ConsoleFormatter.print_warning("No matching notes found")
+            if args.tag and args.keyword:
+                print(f"Found {len(notes)} notes with tag #{args.tag} and keyword '{args.keyword}'")
+            elif args.tag:
+                print(f"Found {len(notes)} notes with tag #{args.tag}")
+            elif args.keyword:
+                print(f"Found {len(notes)} notes with keyword '{args.keyword}'")
 
             # Apply explicit limit if provided
             if args.limit and len(matching_notes) > args.limit:
-                ConsoleFormatter.print_info(f"Limited to {args.limit} of {len(matching_notes)} notes")
+                print(f"\nLIMITED TO {args.limit} OF {len(matching_notes)} NOTES\n")
                 matching_notes = matching_notes[:args.limit]
 
     except Exception as e:
-        ConsoleFormatter.print_error(f"Error: {e}")
+        print(f"Error: {e}")
         return
 
     if not matching_notes:
-        ConsoleFormatter.print_error("No matching notes found.")
+        print("No matching notes found.")
         return
 
     # Display matching notes
-    ConsoleFormatter.print_subheader("Matching Notes")
+    print("\nMatching Notes:")
     for i, note in enumerate(matching_notes, 1):
-        ConsoleFormatter.print_note_info(note, i)
+        print(f"{i}. {note['title']} (Modified: {note['date_modified']})")
 
     # Just list the notes if requested
     if args.list:
@@ -665,45 +360,31 @@ def main():
 
     # Ask for confirmation before processing
     if not args.yes:
-        try:
-            confirmation = input(f"\nFound {len(matching_notes)} matching notes. Process them? (y/n) [y]: ")
-            if confirmation.lower() and confirmation.lower() != 'y':
-                ConsoleFormatter.print_info("Operation cancelled.")
-                return
-        except KeyboardInterrupt:
-            print()  # Add a newline after ^C
-            ConsoleFormatter.print_info("Operation cancelled.")
+        confirmation = input(f"\nFound {len(matching_notes)} matching notes. Process them? (y/n) [y]: ")
+        if confirmation.lower() and confirmation.lower() != 'y':
+            print("Operation cancelled.")
             return
 
     # Process the notes
-    ConsoleFormatter.print_subheader("Processing Notes")
-    ConsoleFormatter.print_info(f"Question: {args.question}")
-
     content = NotesProcessor.format_prompt(matching_notes, args.question)
     question = args.question  # Keep question separate from content
 
     # Open ChatGPT in the browser
-    ConsoleFormatter.print_info("Opening ChatGPT in your default browser...")
-    success = open_browser_with_retry("https://chatgpt.com/")
-    if not success:
-        ConsoleFormatter.print_warning(
-            "Failed to open browser automatically. Please open https://chatgpt.com/ manually.")
+    print("\nOpening ChatGPT in your default browser...")
+    webbrowser.open("https://chatgpt.com/")
 
     # Start the local server to provide the content
     server = LocalServer(content, question, port=args.port, timeout=args.timeout)
-    ConsoleFormatter.print_info(f"Starting local server on port {args.port}...")
+    print(f"\nStarting local server on port {args.port}...")
+    print("Starting the automation process. The server is ready to serve content and receive responses.")
     response = server.start()
 
-    # Save the response to a file if requested
-    if response and args.save:
-        filename = NotesProcessor.save_response_to_file(response, question, matching_notes)
-        ConsoleFormatter.print_success(f"Response saved to {filename}")
+    # Optional: Save the response to a file
+    # if response:
+    #     with open('chatgpt_response.txt', 'w') as f:
+    #         f.write(response)
+    #     print("Response saved to chatgpt_response.txt")
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print()  # Add a newline after ^C
-        ConsoleFormatter.print_info("Operation cancelled by user.")
-        sys.exit(0)
+    main()
