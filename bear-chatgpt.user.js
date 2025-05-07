@@ -281,6 +281,7 @@
         if (!needsChunking) {
             showStatus('Content fits in a single message, sending...');
             await submitMessage(content);
+            await waitForResponse(); // Add this line
             return await getChatGPTResponse();
         }
 
