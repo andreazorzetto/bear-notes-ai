@@ -17,7 +17,7 @@
     const RESPONSE_URL = `http://localhost:${PORT}/response`;
 
     // Config for chunking
-    const CHUNK_SIZE_INITIAL = 10000; // Start with this chunk size
+    const CHUNK_SIZE_INITIAL = 50000; // Start with this chunk size
     const CHUNK_SIZE_MIN = 1000;      // Minimum chunk size to try
     const CHUNK_REDUCTION_FACTOR = 0.7; // How much to reduce chunk size when hitting limits
 
