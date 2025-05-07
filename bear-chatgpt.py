@@ -288,7 +288,28 @@ class LocalServer:
                         response_text = data.get('response', '')
                         metrics = data.get('metrics', {})
 
-                        # Save the response and metrics in the server instance
+                        acknowledgment_patterns = [
+                            r'Acknowledged\.\s+Waiting for Chunk \d+\/\d+\.',
+                            r'Received Chunk \d+\/\d+\.\s+Awaiting the final part\.',
+                            r'Waiting for Chunk \d+\/\d+\.',
+                            r'Chunk \d+\/\d+ received\.',
+                            r'BEGIN RAW NOTES DATA',  # Don't accept if it just contains the data
+                        ]
+
+                        is_acknowledgment = any(
+                            re.search(pattern, response_text) for pattern in acknowledgment_patterns)
+
+                        if is_acknowledgment:
+                            # This is not the final response - acknowledge but don't shut down
+                            self.send_response(200)
+                            self.send_header('Content-type', 'application/json')
+                            self.send_header('Access-Control-Allow-Origin', '*')
+                            self.end_headers()
+                            self.wfile.write(json.dumps({'success': True, 'acknowledgment': True}).encode())
+                            print(f"\nReceived intermediate response; waiting for final response...")
+                            return
+
+                        # Save the actual final response in the server instance
                         server_instance.chatgpt_response = response_text
                         server_instance.metrics = metrics
                         server_instance.response_received = True
@@ -300,8 +321,7 @@ class LocalServer:
                         self.end_headers()
 
                         self.wfile.write(json.dumps({'success': True}).encode())
-                        print(f"\n{Fore.GREEN}Response received! {Style.RESET_ALL}")
-                        print(f"{Fore.CYAN}Server will stop shortly...{Style.RESET_ALL}")
+                        print(f"\nResponse received! Server will stop shortly...")
 
                         # Graceful shutdown after a short delay
                         def shutdown_server():
@@ -345,13 +365,11 @@ class NotesProcessor:
 
     @staticmethod
     def format_prompt(notes, question):
-        """Format notes content, keeping question separate for the userscript"""
-        combined_content = "\n\n===== NOTE SEPARATOR =====\n\n".join(
-            [f"NOTE: {note['title']}\n\n{note['content']}" for note in notes]
+        """Format notes content with clear boundaries"""
+        combined_content = "\n\n===== NOTE ENTRY SEPARATOR =====\n\n".join(
+            [f"NOTE: {note['title']}\n{note['content']}" for note in notes]
         )
 
-        # Return just the content without the question
-        # The question will be sent separately in the JSON
         return combined_content
 
 

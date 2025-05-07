@@ -279,7 +279,7 @@
         }
     };
 
-    // Wait for ChatGPT to finish responding using MutationObserver
+    // Updated waitForResponse function with improved pattern matching
     const waitForResponse = () => new Promise(resolve => {
         let started = false;
         let lastResponseText = '';
@@ -291,7 +291,7 @@
 
         // Create observer to watch for changes in ChatGPT's responses
         const observer = new MutationObserver(mutations => {
-            // Status updates (unchanged)
+            // Status updates
             const now = Date.now();
             if (now - lastProgressUpdate > 2000) {
                 lastProgressUpdate = now;
@@ -315,22 +315,49 @@
                 return;
             }
 
+            // Force completion after reasonable time if final chunk was sent
+            if (window.isFinalChunkSent && (Date.now() - startTime > 60000)) { // 1 minute wait max
+                observer.disconnect();
+                showStatus('Maximum wait time for final response exceeded, capturing current response');
+                setTimeout(resolve, 1000);
+                return;
+            }
+
             // Check if response has started
             if (isThinking() || document.querySelectorAll('[data-message-author-role="assistant"]').length > 0) {
                 started = true;
                 const currentResponseText = getResponseText();
 
-                // More aggressive acknowledgment detection - match more patterns
+                // IMPROVED: More comprehensive acknowledgment patterns
                 const acknowledgmentPatterns = [
-                    /Acknowledged\.\s+Waiting for Chunk \d+\/\d+/i,
+                    /Received Chunk \d+\/\d+\.\s*Awaiting the (next|second|third|[\w\s]+) chunk/i,
+                    /Acknowledged\.\s+Waiting for Chunk \d+\/\d+.*?before proceeding/i,
                     /Received Chunk \d+\/\d+/i,
                     /Waiting for (the )?Chunk \d+\/\d+/i,
                     /Chunk \d+\/\d+ received/i,
-                    /Awaiting (the )?final part/i
+                    /Awaiting (the )?final part/i,
+                    /Awaiting (the )?second chunk/i,
+                    /Awaiting (the )?next chunk/i,
+                    /ALL PARTS SENT.*?signal/i,
+                    /CHATGPT RESPONSE:/i
                 ];
 
                 const isAcknowledgment = acknowledgmentPatterns.some(pattern =>
                     pattern.test(currentResponseText)
+                );
+
+                // IMPROVED: Check if this response contains ChatGPT's progress indicators
+                const progressIndicators = [
+                    /^Received Chunk/i,
+                    /^Waiting for/i,
+                    /^Chunk \d+\/\d+ received/i,
+                    /^Awaiting/i,
+                    /^Processing/i,
+                    /^Analyzing/i
+                ];
+
+                const isProgressIndicator = progressIndicators.some(pattern =>
+                    pattern.test(currentResponseText.trim())
                 );
 
                 // Check if this response contains the ALL PARTS SENT marker
@@ -345,10 +372,24 @@
                     stableCount = 0; // Reset stability counter for final content
                 }
 
+                // IMPROVED: Add an extra delay for multi-chunk processing
+                if (isAcknowledgment && !isFinalResponse) {
+                    stableCount = 0; // Reset stability - we're definitely not done
+                    console.log('Detected acknowledgment message, continuing to wait...');
+                    return; // Skip further processing for acknowledgment messages
+                }
+
+                // If we've sent the final chunk and the response is substantial
+                if (window.isFinalChunkSent && !isAcknowledgment && !isProgressIndicator && currentResponseText.length > 200) {
+                    // More likely to be the final response if longer than typical acknowledgments
+                    stableCount += 2; // Accelerate stability detection for final responses
+                }
+
                 // Key improvement: Skip acknowledgment messages entirely if we're in multi-chunk mode
                 // Only consider response stable if it's not an acknowledgment OR if this is the final chunk
                 const shouldCheckStability = currentResponseText.length > 0 &&
-                                             (!isAcknowledgment || isFinalResponse);
+                                             (!isAcknowledgment || isFinalResponse) &&
+                                             (!isProgressIndicator || isFinalResponse);
 
                 if (shouldCheckStability) {
                     if (currentResponseText === lastResponseText) {
@@ -369,7 +410,7 @@
 
                         if (!isThinking() && (completionIndicators || stableCount >= requiredStability)) {
                             // If this is final content (not an acknowledgment) or we've sent the final chunk
-                            if (!isAcknowledgment || isFinalResponse) {
+                            if ((!isAcknowledgment && !isProgressIndicator) || isFinalResponse) {
                                 observer.disconnect();
                                 showStatus('Response complete, processing...');
                                 setTimeout(resolve, 1000);
@@ -383,7 +424,7 @@
             }
         });
 
-        // Start observing as before
+        // Start observing
         const chatContainer = document.querySelector('main') || document.body;
         observer.observe(chatContainer, {
             childList: true, subtree: true, characterData: true, attributes: true
@@ -391,7 +432,7 @@
 
         showStatus('Waiting for ChatGPT to respond...');
 
-        // Same timeout logic
+        // Timeout if response never starts
         setTimeout(() => {
             if (!started) {
                 observer.disconnect();
@@ -446,8 +487,10 @@
             showStatus('Content fits in a single message, preparing...');
             const singleMessage =
                 `Please ${question}\n\n` +
-                `DOCUMENT CONTENT:\n${content}\n\n` +
-                `END OF DOCUMENT. Please now ${question}`;
+                `===== BEGIN RAW NOTES DATA =====\n` +
+                `${content}\n` +
+                `===== END RAW NOTES DATA =====\n\n` +
+                `The data above contains notes from various meetings and tickets. Based ONLY on this data, ${question}`;
 
             showStatus('Submitting content to ChatGPT...');
             Timer.split('ProcessContent', 'SubmittingMessage');
@@ -475,7 +518,6 @@
         }
 
         // Multi-chunk processing...
-        // (keeping your existing multi-chunk logic)
         Logger.info(`Using multi-chunk approach (${estimatedTotalChunks} chunks)`);
 
         // Send initial message explaining the chunking process
@@ -617,7 +659,67 @@
 
         // For the last chunk we already sent the "ALL PARTS SENT" message
         showStatus('Getting final response...');
-        const response = await getChatGPTResponse();
+        let response;
+        let responseRetryCount = 0;
+        const MAX_RESPONSE_RETRIES = 5;
+
+        // Add retry loop for getting the final response
+        while (responseRetryCount < MAX_RESPONSE_RETRIES) {
+            response = await getChatGPTResponse();
+
+            // Try to send the response
+            try {
+                // Check if this is a transitional message
+                const transitionalPatterns = [
+                    /Received Chunk \d+\/\d+.*?ALL PARTS SENT/i,
+                    /Chunk \d+\/\d+.*?ALL PARTS SENT/i,
+                    /--- End of Chunk \d+\/\d+ ---.*?ALL PARTS SENT/i
+                ];
+
+                const isTransitional = transitionalPatterns.some(pattern => pattern.test(response)) ||
+                                      (response.includes('ALL PARTS SENT') && response.length < 300);
+
+                if (isTransitional) {
+                    responseRetryCount++;
+                    Logger.warning(`Detected transitional message. Retrying (${responseRetryCount}/${MAX_RESPONSE_RETRIES})...`);
+                    showStatus(`Waiting for final analysis... (retry ${responseRetryCount}/${MAX_RESPONSE_RETRIES})`);
+
+                    // Wait for ChatGPT to complete its analysis
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    await waitForResponse();
+                    continue;
+                }
+
+                // Try to send the response to the server
+                let sendResult = await sendResponseToServer(response);
+                if (sendResult && sendResult.shouldRetry) {
+                    responseRetryCount++;
+                    Logger.warning(`Server indicated retry needed (${responseRetryCount}/${MAX_RESPONSE_RETRIES})...`);
+                    showStatus(`Waiting for complete response... (retry ${responseRetryCount}/${MAX_RESPONSE_RETRIES})`);
+
+                    // Wait longer for ChatGPT to finish processing
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    await waitForResponse();
+                    continue;
+                }
+
+                // If we got here, we successfully sent the response
+                break;
+            } catch (err) {
+                // If there was an error that wasn't a retry request, rethrow it
+                if (typeof err !== 'string' || !err.includes('acknowledgment')) {
+                    throw err;
+                }
+
+                // Otherwise try again
+                responseRetryCount++;
+                Logger.warning(`Error with response, retrying (${responseRetryCount}/${MAX_RESPONSE_RETRIES}): ${err}`);
+                showStatus(`Waiting for complete response... (retry ${responseRetryCount}/${MAX_RESPONSE_RETRIES})`);
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                await waitForResponse();
+            }
+        }
+
         Timer.split('ProcessContent', 'FinalResponseReceived');
 
         // Log complete metrics
@@ -632,10 +734,50 @@
         return response;
     };
 
-    // Send response back to the local server with metrics
     const sendResponseToServer = (response) => new Promise((resolve, reject) => {
         const metrics = Timer.getSummary();
 
+        // More comprehensive patterns to detect transitional messages
+        const transitionalPatterns = [
+            /Chunk \d+\/\d+.*?ALL PARTS SENT/i,
+            /of Chunk \d+\/\d+ ---ALL PARTS SENT/i,
+            /End of Chunk.*?ALL PARTS SENT/i,
+            /confirm, I've sent \d+ chunks/i
+        ];
+
+        const isTransitional = transitionalPatterns.some(pattern => pattern.test(response));
+
+        // If this is a transitional message with ALL PARTS SENT
+        if (isTransitional) {
+            console.log('Detected transitional message with ALL PARTS SENT:', response);
+            Logger.warning("Server detected transitional message. Need to wait for actual analysis.");
+
+            // Return a special value instead of rejecting
+            resolve({ needsMoreTime: true });
+            return;
+        }
+
+        // Regular check for other acknowledgment patterns
+        const acknowledgmentPatterns = [
+            /Acknowledged\.\s+Waiting for Chunk \d+\/\d+/i,
+            /Received Chunk \d+\/\d+/i,
+            /Waiting for (the )?Chunk \d+\/\d+/i,
+            /Chunk \d+\/\d+ received/i,
+            /Awaiting (the )?final part/i,
+            /Awaiting (the )?second chunk/i,
+            /Awaiting (the )?next chunk/i,
+            /before proceeding/i
+        ];
+
+        const isAcknowledgment = acknowledgmentPatterns.some(pattern => pattern.test(response));
+
+        if (isAcknowledgment) {
+            Logger.warning('Detected acknowledgment message, not sending to server');
+            resolve({ needsMoreTime: true });
+            return;
+        }
+
+        // Process a valid final response
         GM_xmlhttpRequest({
             method: 'POST',
             url: RESPONSE_URL,
@@ -667,7 +809,30 @@
             const response = await processContent(content, question);
 
             showStatus('Sending response back to server...');
-            await sendResponseToServer(response);
+
+            // Add retry logic for handling transitional messages
+            let finalResponse = response;
+            let retryCount = 0;
+            const MAX_RETRIES = 5;
+
+            while (retryCount < MAX_RETRIES) {
+                const result = await sendResponseToServer(finalResponse);
+
+                if (result && result.needsMoreTime) {
+                    retryCount++;
+                    showStatus(`Waiting for complete analysis... (retry ${retryCount}/${MAX_RETRIES})`);
+                    Logger.warning(`Detected transitional message, waiting for complete analysis (${retryCount}/${MAX_RETRIES})...`);
+
+                    // Wait for ChatGPT to finish its analysis
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    await waitForResponse();
+                    finalResponse = await getChatGPTResponse();
+                    continue;
+                }
+
+                // If we get here, the response was successfully sent
+                break;
+            }
 
             showStatus('Done! Closing tab...');
             setTimeout(() => window.close(), 2000);
