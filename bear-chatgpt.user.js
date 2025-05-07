@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Bear Notes to ChatGPT with Improved Chunking
+// @name         Bear Notes to ChatGPT with Improved Performance
 // @namespace    http://tampermonkey.net/
-// @version      2.0
-// @description  Auto-paste Bear Notes with smart chunking for long content, get ChatGPT response, and close tab
+// @version      3.0
+// @description  Auto-paste Bear Notes with optimized chunking and faster response handling
 // @author       Generated Script (Enhanced)
 // @match        https://chatgpt.com/*
 // @grant        GM_xmlhttpRequest
@@ -16,12 +16,12 @@
     const SERVER_URL = `http://localhost:${PORT}/content`;
     const RESPONSE_URL = `http://localhost:${PORT}/response`;
 
-    // Config for chunking
-    const CHUNK_SIZE_INITIAL = 10000; // Start with this chunk size
-    const CHUNK_SIZE_MIN = 1000;      // Minimum chunk size to try
-    const CHUNK_REDUCTION_FACTOR = 0.7; // How much to reduce chunk size when hitting limits
+    // Config for chunking - increased initial size
+    const CHUNK_SIZE_INITIAL = 50000; // Increased from 10000
+    const CHUNK_SIZE_MIN = 1000;
+    const CHUNK_REDUCTION_FACTOR = 0.7;
 
-    // Improved chunking strategy templates
+    // Chunking strategy templates
     const INITIAL_MESSAGE_TEMPLATE =
         "I'm sending a document in {totalChunks} chunks. Do not respond or process until I say 'ALL PARTS SENT'. " +
         "After all parts are received, please {question}";
@@ -204,6 +204,16 @@
         }
     };
 
+    // Prepare next chunk in the background
+    const prepareNextChunkAsync = async (remainingContent, chunkSize) => {
+        return new Promise(resolve => {
+            setTimeout(() => {
+                const nextChunk = remainingContent.substring(0, chunkSize);
+                resolve(nextChunk);
+            }, 0);
+        });
+    };
+
     // Try to submit content to ChatGPT
     const submitMessage = async (message) => {
         return new Promise((resolve, reject) => {
@@ -269,7 +279,97 @@
         }
     };
 
-    // Process content in chunks with improved formatting
+    // Wait for ChatGPT to finish responding using MutationObserver
+     const waitForResponse = () => new Promise(resolve => {
+        let started = false;
+        let lastResponseText = '';
+        let stableCount = 0;
+        const MAX_WAIT_TIME = 300000; // 5 minutes
+        const startTime = Date.now();
+
+        // Create observer to watch for changes in ChatGPT's responses
+        const observer = new MutationObserver(mutations => {
+            // Check if maximum wait time exceeded
+            if (Date.now() - startTime > MAX_WAIT_TIME) {
+                observer.disconnect();
+                showStatus('Maximum wait time exceeded, capturing current response');
+                setTimeout(resolve, 1000);
+                return;
+            }
+
+            // Check if response has started
+            if (isThinking() || document.querySelectorAll('[data-message-author-role="assistant"]').length > 0) {
+                started = true;
+                const currentResponseText = getResponseText();
+
+                // Only check for stability if we've actually got content
+                if (currentResponseText.length > 0) {
+                    // Check if response has stabilized
+                    if (currentResponseText === lastResponseText) {
+                        stableCount++;
+
+                        // If not thinking AND either:
+                        // 1. We see completion indicators in UI, OR
+                        // 2. Text has been stable for longer (higher count for longer responses)
+                        const completionIndicators = document.querySelectorAll(
+                            'button:not([disabled])[aria-label="Regenerate response"],' +
+                            'button:not([disabled])[data-testid="regenerate-response-button"],' +
+                            '.prose [id^="message-completion-status"]'
+                        ).length > 0;
+
+                        const requiredStableCount = Math.min(20, Math.max(10, Math.floor(currentResponseText.length / 500)));
+
+                        if (!isThinking() && (completionIndicators || stableCount >= requiredStableCount)) {
+                            observer.disconnect();
+                            setTimeout(resolve, 1000);
+                        }
+                    } else {
+                        stableCount = 0;
+                        lastResponseText = currentResponseText;
+                    }
+                }
+            }
+        });
+
+        // Start observing with the same configuration
+        const chatContainer = document.querySelector('main') || document.body;
+        observer.observe(chatContainer, {
+            childList: true, subtree: true, characterData: true, attributes: true
+        });
+
+        // Same timeout logic
+        setTimeout(() => {
+            if (!started) {
+                observer.disconnect();
+                showStatus('Timeout waiting for response', true);
+                resolve();
+            }
+        }, 30000);
+    });
+
+    // Check if ChatGPT is still generating a response
+    const isThinking = () => {
+        return document.querySelector('.result-thinking') !== null ||
+               document.querySelector('[role="progressbar"]') !== null ||
+               document.querySelector('.animate-spin') !== null ||
+               document.querySelector('[data-state="loading"]') !== null;
+    };
+
+    // Get current response text from ChatGPT
+    const getResponseText = () => {
+        const responses = document.querySelectorAll('[data-message-author-role="assistant"]');
+        if (!responses.length) return '';
+        return responses[responses.length - 1].textContent;
+    };
+
+    // Get the final response from ChatGPT
+    const getChatGPTResponse = () => {
+        const responses = document.querySelectorAll('[data-message-author-role="assistant"]');
+        if (!responses.length) throw new Error('No ChatGPT response found');
+        return responses[responses.length - 1].textContent;
+    };
+
+    // Process content in chunks with improved formatting and parallel processing
     const processContent = async (content, question = "analyze the complete document and provide a comprehensive response") => {
         let remainingContent = content;
         let chunkSize = CHUNK_SIZE_INITIAL;
@@ -277,14 +377,20 @@
         let estimatedTotalChunks = estimateTotalChunks(content, chunkSize);
         let needsChunking = estimatedTotalChunks > 1;
 
-        // If content fits in one message, send it directly
+        // If content fits in one message, send it directly with question
         if (!needsChunking) {
-            showStatus('Content fits in a single message, sending...');
-            await submitMessage(content);
-            await waitForResponse(); // Add this line
+            showStatus('Content fits in a single message, sending with question...');
+            const singleMessage =
+                `Please ${question}\n\n` +
+                `DOCUMENT CONTENT:\n${content}\n\n` +
+                `END OF DOCUMENT. Please now ${question}`;
+
+            await submitMessage(singleMessage);
+            await waitForResponse();
             return await getChatGPTResponse();
         }
 
+        // Keep all multi-chunk logic exactly as it was
         // Send initial message explaining the chunking process
         showStatus('Sending initial chunking message with the question...');
         const initialMessage = formatMessage('initial', { totalChunks: estimatedTotalChunks, question: question });
@@ -295,7 +401,12 @@
         let actualChunks = [];
         while (remainingContent.length > 0) {
             actualChunkNum++;
-            const isLastChunk = (remainingContent.length <= chunkSize);
+            const isLastChunk = (remainingContent.length - chunkSize <= 0);
+
+            // Start preparing the next chunk in parallel
+            let nextChunkPromise = !isLastChunk ?
+                prepareNextChunkAsync(remainingContent.substring(chunkSize), chunkSize) :
+                Promise.resolve(null);
 
             showStatus(`Processing chunk ${actualChunkNum}/${estimatedTotalChunks}... (${remainingContent.length} chars remaining)`);
 
@@ -373,90 +484,21 @@
             // Wait for ChatGPT to process the chunk
             await waitForResponse();
 
+            // Get the next chunk that was being prepared in parallel
+            const nextChunk = await nextChunkPromise;
+
             // Store the processed chunk for tracking
             actualChunks.push(currentChunk);
 
             // Remove the processed chunk from remaining content
             remainingContent = remainingContent.substring(chunkSize);
 
-            // If there's more content, wait briefly before continuing
-            if (remainingContent.length > 0) {
-                showStatus('Preparing next chunk...');
-                await new Promise(resolve => setTimeout(resolve, 1000));
-            }
+            // No need for a fixed delay - we're already using parallel processing
         }
 
         // For the last chunk we already sent the "ALL PARTS SENT" message
         // So we just need to return the final response
         return await getChatGPTResponse();
-    };
-
-    // Check if ChatGPT is still generating a response
-    const isThinking = () => {
-        return document.querySelector('.result-thinking') !== null ||
-               document.querySelector('[role="progressbar"]') !== null ||
-               document.querySelector('.animate-spin') !== null ||
-               document.querySelector('[data-state="loading"]') !== null;
-    };
-
-    // Get current response text from ChatGPT
-    const getResponseText = () => {
-        const responses = document.querySelectorAll('[data-message-author-role="assistant"]');
-        if (!responses.length) return '';
-        return responses[responses.length - 1].textContent;
-    };
-
-    // Wait for ChatGPT to finish responding
-    const waitForResponse = () => new Promise(resolve => {
-        let started = false;
-        let lastResponseText = '';
-        let stableCount = 0;
-        const MAX_WAIT_TIME = 300000; // 5 minutes
-        const startTime = Date.now();
-
-        const checkResponse = setInterval(() => {
-            // Check if maximum wait time exceeded
-            if (Date.now() - startTime > MAX_WAIT_TIME) {
-                clearInterval(checkResponse);
-                showStatus('Maximum wait time exceeded, capturing current response');
-                setTimeout(resolve, 1000);
-                return;
-            }
-
-            // Check if response has started
-            if (isThinking() || document.querySelectorAll('[data-message-author-role="assistant"]').length > 0) {
-                started = true;
-                const currentResponseText = getResponseText();
-
-                // Check if response has stabilized
-                if (currentResponseText === lastResponseText) {
-                    stableCount++;
-                    if (!isThinking() && stableCount >= 10) {
-                        clearInterval(checkResponse);
-                        setTimeout(resolve, 2000);
-                    }
-                } else {
-                    stableCount = 0;
-                    lastResponseText = currentResponseText;
-                }
-            }
-        }, 500);
-
-        // Timeout if response hasn't started after 30 seconds
-        setTimeout(() => {
-            if (!started) {
-                clearInterval(checkResponse);
-                showStatus('Timeout waiting for response', true);
-                resolve();
-            }
-        }, 30000);
-    });
-
-    // Get the final response from ChatGPT
-    const getChatGPTResponse = () => {
-        const responses = document.querySelectorAll('[data-message-author-role="assistant"]');
-        if (!responses.length) throw new Error('No ChatGPT response found');
-        return responses[responses.length - 1].textContent;
     };
 
     // Send response back to the local server
