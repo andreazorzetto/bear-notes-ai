@@ -280,15 +280,33 @@
     };
 
     // Wait for ChatGPT to finish responding using MutationObserver
-     const waitForResponse = () => new Promise(resolve => {
+    const waitForResponse = () => new Promise(resolve => {
         let started = false;
         let lastResponseText = '';
         let stableCount = 0;
+        let lastProgressUpdate = Date.now();
+        let waitingDots = 0;
         const MAX_WAIT_TIME = 300000; // 5 minutes
         const startTime = Date.now();
 
         // Create observer to watch for changes in ChatGPT's responses
         const observer = new MutationObserver(mutations => {
+            // Update status periodically to show activity
+            const now = Date.now();
+            if (now - lastProgressUpdate > 2000) { // Update every 2 seconds
+                lastProgressUpdate = now;
+                waitingDots = (waitingDots + 1) % 4;
+                const dots = '.'.repeat(waitingDots);
+                const elapsed = Math.floor((now - startTime) / 1000);
+
+                if (isThinking()) {
+                    showStatus(`ChatGPT is thinking${dots} (${elapsed}s)`);
+                } else if (document.querySelectorAll('[data-message-author-role="assistant"]').length > 0) {
+                    const responseLength = getResponseText().length;
+                    showStatus(`Receiving response${dots} (${responseLength} chars, ${elapsed}s)`);
+                }
+            }
+
             // Check if maximum wait time exceeded
             if (Date.now() - startTime > MAX_WAIT_TIME) {
                 observer.disconnect();
@@ -321,6 +339,7 @@
 
                         if (!isThinking() && (completionIndicators || stableCount >= requiredStableCount)) {
                             observer.disconnect();
+                            showStatus('Response complete, processing...');
                             setTimeout(resolve, 1000);
                         }
                     } else {
@@ -337,11 +356,14 @@
             childList: true, subtree: true, characterData: true, attributes: true
         });
 
-        // Same timeout logic
+        // Initial waiting message
+        showStatus('Waiting for ChatGPT to respond...');
+
+        // Same timeout logic but with better messaging
         setTimeout(() => {
             if (!started) {
                 observer.disconnect();
-                showStatus('Timeout waiting for response', true);
+                showStatus('No response detected after 30s, continuing...', true);
                 resolve();
             }
         }, 30000);
@@ -379,14 +401,19 @@
 
         // If content fits in one message, send it directly with question
         if (!needsChunking) {
-            showStatus('Content fits in a single message, sending with question...');
+            showStatus('Content fits in a single message, preparing...');
             const singleMessage =
                 `Please ${question}\n\n` +
                 `DOCUMENT CONTENT:\n${content}\n\n` +
                 `END OF DOCUMENT. Please now ${question}`;
 
+            showStatus('Submitting content to ChatGPT...');
             await submitMessage(singleMessage);
+
+            showStatus('Waiting for ChatGPT to respond...');
             await waitForResponse();
+
+            showStatus('Processing ChatGPT response...');
             return await getChatGPTResponse();
         }
 
@@ -482,6 +509,7 @@
             }
 
             // Wait for ChatGPT to process the chunk
+            showStatus(`Waiting for ChatGPT to process chunk ${actualChunkNum}...`);
             await waitForResponse();
 
             // Get the next chunk that was being prepared in parallel
@@ -498,6 +526,7 @@
 
         // For the last chunk we already sent the "ALL PARTS SENT" message
         // So we just need to return the final response
+        showStatus('Getting final response...');
         return await getChatGPTResponse();
     };
 
