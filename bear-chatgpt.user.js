@@ -291,9 +291,9 @@
 
         // Create observer to watch for changes in ChatGPT's responses
         const observer = new MutationObserver(mutations => {
-            // Update status periodically to show activity
+            // Status updates (unchanged)
             const now = Date.now();
-            if (now - lastProgressUpdate > 2000) { // Update every 2 seconds
+            if (now - lastProgressUpdate > 2000) {
                 lastProgressUpdate = now;
                 waitingDots = (waitingDots + 1) % 4;
                 const dots = '.'.repeat(waitingDots);
@@ -320,27 +320,60 @@
                 started = true;
                 const currentResponseText = getResponseText();
 
-                // Only check for stability if we've actually got content
-                if (currentResponseText.length > 0) {
-                    // Check if response has stabilized
+                // More aggressive acknowledgment detection - match more patterns
+                const acknowledgmentPatterns = [
+                    /Acknowledged\.\s+Waiting for Chunk \d+\/\d+/i,
+                    /Received Chunk \d+\/\d+/i,
+                    /Waiting for (the )?Chunk \d+\/\d+/i,
+                    /Chunk \d+\/\d+ received/i,
+                    /Awaiting (the )?final part/i
+                ];
+
+                const isAcknowledgment = acknowledgmentPatterns.some(pattern =>
+                    pattern.test(currentResponseText)
+                );
+
+                // Check if this response contains the ALL PARTS SENT marker
+                const hasAllPartsSent = currentResponseText.includes('ALL PARTS SENT');
+
+                // Consider the final chunk sent if we see ALL PARTS SENT or the window flag is set
+                const isFinalResponse = window.isFinalChunkSent || hasAllPartsSent;
+
+                if (hasAllPartsSent && !window.isFinalChunkSent) {
+                    window.isFinalChunkSent = true;
+                    console.log('Found ALL PARTS SENT in response, waiting for final content');
+                    stableCount = 0; // Reset stability counter for final content
+                }
+
+                // Key improvement: Skip acknowledgment messages entirely if we're in multi-chunk mode
+                // Only consider response stable if it's not an acknowledgment OR if this is the final chunk
+                const shouldCheckStability = currentResponseText.length > 0 &&
+                                             (!isAcknowledgment || isFinalResponse);
+
+                if (shouldCheckStability) {
                     if (currentResponseText === lastResponseText) {
                         stableCount++;
 
-                        // If not thinking AND either:
-                        // 1. We see completion indicators in UI, OR
-                        // 2. Text has been stable for longer (higher count for longer responses)
+                        // More aggressive stability check for final response
                         const completionIndicators = document.querySelectorAll(
                             'button:not([disabled])[aria-label="Regenerate response"],' +
                             'button:not([disabled])[data-testid="regenerate-response-button"],' +
                             '.prose [id^="message-completion-status"]'
                         ).length > 0;
 
-                        const requiredStableCount = Math.min(20, Math.max(10, Math.floor(currentResponseText.length / 500)));
+                        // Require more stability for final responses
+                        const baseStabilityCount = Math.min(20, Math.max(10, Math.floor(currentResponseText.length / 500)));
+                        const requiredStability = isFinalResponse ?
+                                                 Math.ceil(baseStabilityCount * 1.5) : // 50% more for final
+                                                 baseStabilityCount;
 
-                        if (!isThinking() && (completionIndicators || stableCount >= requiredStableCount)) {
-                            observer.disconnect();
-                            showStatus('Response complete, processing...');
-                            setTimeout(resolve, 1000);
+                        if (!isThinking() && (completionIndicators || stableCount >= requiredStability)) {
+                            // If this is final content (not an acknowledgment) or we've sent the final chunk
+                            if (!isAcknowledgment || isFinalResponse) {
+                                observer.disconnect();
+                                showStatus('Response complete, processing...');
+                                setTimeout(resolve, 1000);
+                            }
                         }
                     } else {
                         stableCount = 0;
@@ -350,16 +383,15 @@
             }
         });
 
-        // Start observing with the same configuration
+        // Start observing as before
         const chatContainer = document.querySelector('main') || document.body;
         observer.observe(chatContainer, {
             childList: true, subtree: true, characterData: true, attributes: true
         });
 
-        // Initial waiting message
         showStatus('Waiting for ChatGPT to respond...');
 
-        // Same timeout logic but with better messaging
+        // Same timeout logic
         setTimeout(() => {
             if (!started) {
                 observer.disconnect();
@@ -393,14 +425,24 @@
 
     // Process content in chunks with improved formatting and parallel processing
     const processContent = async (content, question = "analyze the complete document and provide a comprehensive response") => {
+        // Start overall timing
+        Timer.start('ProcessContent');
+
         let remainingContent = content;
         let chunkSize = CHUNK_SIZE_INITIAL;
         let actualChunkNum = 0;
         let estimatedTotalChunks = estimateTotalChunks(content, chunkSize);
         let needsChunking = estimatedTotalChunks > 1;
 
+        Logger.info(`Document size: ${content.length} characters`);
+        Logger.info(`Initial chunk size: ${chunkSize} characters`);
+        Logger.info(`Estimated chunks: ${estimatedTotalChunks}`);
+
         // If content fits in one message, send it directly with question
         if (!needsChunking) {
+            Logger.info('Content fits in a single message');
+            Timer.split('ProcessContent', 'PrepareMessage');
+
             showStatus('Content fits in a single message, preparing...');
             const singleMessage =
                 `Please ${question}\n\n` +
@@ -408,26 +450,51 @@
                 `END OF DOCUMENT. Please now ${question}`;
 
             showStatus('Submitting content to ChatGPT...');
+            Timer.split('ProcessContent', 'SubmittingMessage');
+            window.isFinalChunkSent = true;
             await submitMessage(singleMessage);
 
             showStatus('Waiting for ChatGPT to respond...');
+            const waitStartTime = performance.now();
             await waitForResponse();
+            const waitTime = performance.now() - waitStartTime;
+            Timer.split('ProcessContent', `WaitForResponse(${waitTime.toFixed(2)}ms)`);
 
             showStatus('Processing ChatGPT response...');
-            return await getChatGPTResponse();
+            const response = await getChatGPTResponse();
+            Timer.split('ProcessContent', 'GetResponse');
+
+            // Log metrics information
+            const metrics = Timer.end('ProcessContent');
+            showStatus(`Done! (${(metrics.total / 1000).toFixed(2)}s)`);
+
+            Logger.success(`Processing completed in ${(metrics.total / 1000).toFixed(2)} seconds`);
+            Logger.metrics([metrics]);
+
+            return response;
         }
 
-        // Keep all multi-chunk logic exactly as it was
+        // Multi-chunk processing...
+        // (keeping your existing multi-chunk logic)
+        Logger.info(`Using multi-chunk approach (${estimatedTotalChunks} chunks)`);
+
         // Send initial message explaining the chunking process
         showStatus('Sending initial chunking message with the question...');
+        Timer.split('ProcessContent', 'SendingInitialMessage');
         const initialMessage = formatMessage('initial', { totalChunks: estimatedTotalChunks, question: question });
         await submitMessage(initialMessage);
         await waitForResponse();
+        Timer.split('ProcessContent', 'InitialMessageProcessed');
 
         // Process each chunk
         let actualChunks = [];
+        let chunkMetrics = [];
+
         while (remainingContent.length > 0) {
             actualChunkNum++;
+            const chunkTimerLabel = `Chunk${actualChunkNum}`;
+            Timer.start(chunkTimerLabel);
+
             const isLastChunk = (remainingContent.length - chunkSize <= 0);
 
             // Start preparing the next chunk in parallel
@@ -436,14 +503,15 @@
                 Promise.resolve(null);
 
             showStatus(`Processing chunk ${actualChunkNum}/${estimatedTotalChunks}... (${remainingContent.length} chars remaining)`);
+            Logger.info(`Processing chunk ${actualChunkNum}/${estimatedTotalChunks} (${remainingContent.length} chars remaining)`);
 
             // Extract the next chunk
             let currentChunk = remainingContent.substring(0, chunkSize);
+            Timer.split(chunkTimerLabel, 'ChunkExtracted');
 
-            // Format the chunk message - include ALL PARTS SENT in the last chunk
+            // Format the chunk message
             let chunkMessage;
             if (isLastChunk) {
-                // For the last chunk, include the completion message in the same message
                 chunkMessage = formatMessage('chunk', {
                     currentChunk: actualChunkNum,
                     totalChunks: estimatedTotalChunks,
@@ -456,19 +524,33 @@
                     chunkContent: currentChunk
                 });
             }
+            Timer.split(chunkTimerLabel, 'ChunkFormatted');
 
             // Try to submit the chunk, reduce size if too large
             let success = false;
+            let retryCount = 0;
             while (!success && chunkSize >= CHUNK_SIZE_MIN) {
                 try {
+                    retryCount++;
+                    if (retryCount > 1) {
+                        Logger.warning(`Retry ${retryCount-1} for chunk ${actualChunkNum} with size ${chunkSize}`);
+                    }
+
+                    Timer.split(chunkTimerLabel, `SubmitAttempt${retryCount}`);
+                    if (isLastChunk) {
+                        window.isFinalChunkSent = true;
+                    }
                     success = await submitMessage(chunkMessage);
 
                     if (!success) {
                         // Reduce chunk size and try again
+                        const oldSize = chunkSize;
                         chunkSize = Math.max(Math.floor(chunkSize * CHUNK_REDUCTION_FACTOR), CHUNK_SIZE_MIN);
-                        showStatus(`Chunk too large, reducing to ${chunkSize} chars...`);
 
-                        // We need to recalculate the total chunks estimate
+                        showStatus(`Chunk too large, reducing to ${chunkSize} chars...`);
+                        Logger.warning(`Chunk ${actualChunkNum} too large (${oldSize} chars), reducing to ${chunkSize} chars`);
+
+                        // Recalculate the total chunks estimate
                         estimatedTotalChunks = Math.max(
                             estimatedTotalChunks,
                             actualChunkNum + Math.ceil(remainingContent.length / chunkSize)
@@ -478,16 +560,15 @@
                         currentChunk = remainingContent.substring(0, chunkSize);
                         isLastChunk = (remainingContent.length <= chunkSize);
 
-                        // Reformat with updated values - handle last chunk case
-                        let updatedChunkMessage;
+                        // Reformat with updated values
                         if (isLastChunk) {
-                            updatedChunkMessage = formatMessage('chunk', {
+                            chunkMessage = formatMessage('chunk', {
                                 currentChunk: actualChunkNum,
                                 totalChunks: estimatedTotalChunks,
                                 chunkContent: currentChunk
                             }) + "\n\n" + formatMessage('final', { totalChunks: actualChunkNum, question: question });
                         } else {
-                            updatedChunkMessage = formatMessage('chunk', {
+                            chunkMessage = formatMessage('chunk', {
                                 currentChunk: actualChunkNum,
                                 totalChunks: estimatedTotalChunks,
                                 chunkContent: currentChunk
@@ -496,24 +577,30 @@
 
                         // Try again with the smaller chunk
                         clearChatInput();
-                        success = await submitMessage(updatedChunkMessage);
                     }
                 } catch (err) {
-                    console.error('Error submitting chunk:', err);
+                    Logger.error(`Error submitting chunk ${actualChunkNum}: ${err}`);
                     throw err;
                 }
             }
 
             if (!success) {
+                Logger.error(`Failed to submit chunk ${actualChunkNum} even at minimum size ${CHUNK_SIZE_MIN}`);
                 throw new Error(`Failed to submit chunk even at minimum size ${CHUNK_SIZE_MIN}`);
             }
 
             // Wait for ChatGPT to process the chunk
             showStatus(`Waiting for ChatGPT to process chunk ${actualChunkNum}...`);
+            Timer.split(chunkTimerLabel, 'WaitingForResponse');
+
+            const chunkWaitStart = performance.now();
             await waitForResponse();
+            const chunkWaitTime = performance.now() - chunkWaitStart;
+            Timer.split(chunkTimerLabel, `ResponseReceived(${chunkWaitTime.toFixed(2)}ms)`);
 
             // Get the next chunk that was being prepared in parallel
             const nextChunk = await nextChunkPromise;
+            Timer.split(chunkTimerLabel, 'NextChunkPrepared');
 
             // Store the processed chunk for tracking
             actualChunks.push(currentChunk);
@@ -521,21 +608,45 @@
             // Remove the processed chunk from remaining content
             remainingContent = remainingContent.substring(chunkSize);
 
-            // No need for a fixed delay - we're already using parallel processing
+            // Collect metrics for this chunk
+            const chunkMetric = Timer.end(chunkTimerLabel);
+            chunkMetrics.push(chunkMetric);
+
+            Logger.success(`Chunk ${actualChunkNum} processed in ${(chunkMetric.total / 1000).toFixed(2)} seconds`);
         }
 
         // For the last chunk we already sent the "ALL PARTS SENT" message
-        // So we just need to return the final response
         showStatus('Getting final response...');
-        return await getChatGPTResponse();
+        const response = await getChatGPTResponse();
+        Timer.split('ProcessContent', 'FinalResponseReceived');
+
+        // Log complete metrics
+        const metrics = Timer.end('ProcessContent');
+        chunkMetrics.push(metrics);
+
+        showStatus(`Done! Processed ${actualChunkNum} chunks in ${(metrics.total / 1000).toFixed(2)}s`);
+
+        Logger.success(`Processing completed in ${(metrics.total / 1000).toFixed(2)} seconds`);
+        Logger.metrics(chunkMetrics);
+
+        return response;
     };
 
-    // Send response back to the local server
-    const sendResponseToServer = response => new Promise((resolve, reject) => {
+    // Send response back to the local server with metrics
+    const sendResponseToServer = (response) => new Promise((resolve, reject) => {
+        const metrics = Timer.getSummary();
+
         GM_xmlhttpRequest({
             method: 'POST',
             url: RESPONSE_URL,
-            data: JSON.stringify({ response }),
+            data: JSON.stringify({
+                response,
+                metrics: {
+                    totalTime: metrics.find(m => m.label === 'ProcessContent')?.total || 0,
+                    chunkCount: metrics.filter(m => m.label.startsWith('Chunk')).length,
+                    detailedMetrics: metrics
+                }
+            }),
             headers: { 'Content-Type': 'application/json' },
             onload: (response) => {
                 if (response.status === 200) resolve();
@@ -563,6 +674,103 @@
         } catch (err) {
             showStatus(`Error: ${err.message || err}`, true);
             console.error('Bear to ChatGPT error:', err);
+        }
+    };
+
+    // Add timing utility for tracking performance metrics
+    const Timer = {
+        timers: {},
+        start: function(label) {
+            this.timers[label] = {
+                start: performance.now(),
+                splits: []
+            };
+            console.log(`%c[TIMER] Started: ${label}`, 'color: #4CAF50; font-weight: bold;');
+        },
+        split: function(label, splitName) {
+            if (!this.timers[label]) return;
+            const now = performance.now();
+            const elapsed = now - this.timers[label].start;
+            this.timers[label].splits.push({
+                name: splitName,
+                time: elapsed
+            });
+            console.log(`%c[TIMER] ${label} - ${splitName}: ${elapsed.toFixed(2)}ms`, 'color: #2196F3;');
+        },
+        end: function(label) {
+            if (!this.timers[label]) return;
+            const now = performance.now();
+            const elapsed = now - this.timers[label].start;
+            console.log(`%c[TIMER] Ended: ${label} - Total: ${elapsed.toFixed(2)}ms`, 'color: #4CAF50; font-weight: bold;');
+
+            // Return the timer data for reporting
+            return {
+                label,
+                total: elapsed,
+                splits: this.timers[label].splits
+            };
+        },
+        // Get a formatted summary of all metrics
+        getSummary: function() {
+            let summary = [];
+            for (const label in this.timers) {
+                const timer = this.timers[label];
+                const total = performance.now() - timer.start;
+                summary.push({
+                    label,
+                    total,
+                    splits: timer.splits
+                });
+            }
+            return summary;
+        }
+    };
+
+    // Enhanced console logging
+    const Logger = {
+        INFO: 'color: #2196F3; font-weight: bold;',
+        SUCCESS: 'color: #4CAF50; font-weight: bold;',
+        WARNING: 'color: #FF9800; font-weight: bold;',
+        ERROR: 'color: #F44336; font-weight: bold;',
+
+        info: function(message) {
+            console.log(`%c[INFO] ${message}`, this.INFO);
+        },
+
+        success: function(message) {
+            console.log(`%c[SUCCESS] ${message}`, this.SUCCESS);
+        },
+
+        warning: function(message) {
+            console.log(`%c[WARNING] ${message}`, this.WARNING);
+        },
+
+        error: function(message) {
+            console.log(`%c[ERROR] ${message}`, this.ERROR);
+        },
+
+        metrics: function(metrics) {
+            console.group('%c[METRICS] Performance Report', 'color: #9C27B0; font-weight: bold;');
+
+            console.table(metrics.map(m => ({
+                Process: m.label,
+                'Total Time (ms)': m.total.toFixed(2),
+                'Steps': m.splits.length
+            })));
+
+            // Log detailed split information for each timer
+            metrics.forEach(m => {
+                if (m.splits.length > 0) {
+                    console.group(`${m.label} - Detailed Steps`);
+                    console.table(m.splits.map(s => ({
+                        Step: s.name,
+                        'Time (ms)': s.time.toFixed(2)
+                    })));
+                    console.groupEnd();
+                }
+            });
+
+            console.groupEnd();
         }
     };
 

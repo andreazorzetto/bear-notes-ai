@@ -128,9 +128,17 @@ class LocalServer:
         self.chatgpt_response = None
         self.response_received = False
         self.server = None
+        self.metrics = None
+        self.start_time = None
 
     def start(self):
         """Start the local server and wait for a response"""
+        import time
+        from colorama import init, Fore, Style
+
+        # Initialize colorama for colored terminal output
+        init()
+
         handler = self._create_handler()
 
         # Enable socket reuse to prevent "Address already in use" errors
@@ -138,34 +146,62 @@ class LocalServer:
 
         try:
             self.server = socketserver.TCPServer(("", self.port), handler)
+            self.start_time = time.time()
 
-            print(f"\nServer started at http://localhost:{self.port}")
-            print("Waiting for the client to fetch the content...")
-            print("Please navigate to https://chatgpt.com in your browser")
-            print("The server will automatically stop after receiving the response")
-            print("(You can also press Ctrl+C to stop the server manually)")
+            # Print server info with colors
+            print(f"\n{Fore.GREEN}{'=' * 80}{Style.RESET_ALL}")
+            print(f"{Fore.CYAN}Bear Notes to ChatGPT Server{Style.RESET_ALL}")
+            print(f"{Fore.GREEN}{'-' * 80}{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}Server started at{Style.RESET_ALL} http://localhost:{self.port}")
+            print(f"{Fore.YELLOW}Content size:{Style.RESET_ALL} {len(self.prompt_content):,} characters")
+            print(f"{Fore.YELLOW}Question:{Style.RESET_ALL} \"{self.prompt_question}\"")
+            print(f"{Fore.YELLOW}Timeout:{Style.RESET_ALL} {self.timeout} seconds")
+            print(f"{Fore.GREEN}{'-' * 80}{Style.RESET_ALL}")
+            print(f"{Fore.CYAN}Waiting for the client to fetch the content...{Style.RESET_ALL}")
+            print(f"Please navigate to {Fore.CYAN}https://chatgpt.com{Style.RESET_ALL} in your browser")
+            print(f"The server will automatically stop after receiving the response")
+            print(f"(You can also press {Fore.RED}Ctrl+C{Style.RESET_ALL} to stop the server manually)")
+            print(f"{Fore.GREEN}{'=' * 80}{Style.RESET_ALL}")
 
             # Set a short timeout to allow checking for response_received flag
             self.server.timeout = 1.0
 
             # Set maximum runtime
             start_time = time.time()
+            last_update = start_time
+            dots = 0
 
             # Continue serving until we receive a response or timeout
             while not self.response_received:
-                if time.time() - start_time > self.timeout:
-                    print(f"\nTimeout after {self.timeout} seconds. Shutting down server...")
+                now = time.time()
+                elapsed = now - start_time
+
+                # Update waiting animation every 2 seconds
+                if now - last_update > 2.0:
+                    dots = (dots + 1) % 4
+                    dot_str = '.' * dots
+                    elapsed_str = f"{int(elapsed)}s elapsed"
+                    print(
+                        f"\r{Fore.CYAN}Waiting for response{dot_str.ljust(4)} {Fore.YELLOW}[{elapsed_str}]{Style.RESET_ALL}",
+                        end='')
+                    last_update = now
+
+                if elapsed > self.timeout:
+                    print(
+                        f"\n\n{Fore.RED}Timeout after {self.timeout} seconds. Shutting down server...{Style.RESET_ALL}")
                     break
+
                 self.server.handle_request()
 
         except KeyboardInterrupt:
-            print("\nServer stopped manually.")
+            print(f"\n\n{Fore.YELLOW}Server stopped manually.{Style.RESET_ALL}")
         except OSError as e:
             if "Address already in use" in str(e):
-                print(f"\nError: Port {self.port} is already in use.")
-                print("Another instance may be running. Please wait a moment and try again.")
+                print(f"\n\n{Fore.RED}Error: Port {self.port} is already in use.{Style.RESET_ALL}")
+                print(
+                    f"{Fore.YELLOW}Another instance may be running. Please wait a moment and try again.{Style.RESET_ALL}")
             else:
-                print(f"\nServer error: {e}")
+                print(f"\n\n{Fore.RED}Server error: {e}{Style.RESET_ALL}")
         finally:
             if self.server:
                 self.server.server_close()
@@ -177,19 +213,48 @@ class LocalServer:
         return None
 
     def _print_formatted_response(self):
-        """Print the response in a nicely formatted way"""
+        """Print the response in a nicely formatted way with metrics"""
+        from colorama import Fore, Style
+        import time
+
         separator = "=" * 80
-        print(f"\n{separator}")
-        print("CHATGPT RESPONSE:")
-        print("-" * 80)
+        metrics_str = ""
+
+        # Calculate total processing time
+        total_time = time.time() - self.start_time
+
+        # Format metrics if available
+        if self.metrics:
+            js_time = self.metrics.get('totalTime', 0) / 1000  # Convert from ms to seconds
+            chunk_count = max(self.metrics.get('chunkCount', 1), 1)  # Ensure minimum of 1 to avoid division by zero
+
+            metrics_str = f"""
+    {Fore.CYAN}PROCESSING METRICS:{Style.RESET_ALL}
+    {Fore.YELLOW}Total processing time:{Style.RESET_ALL} {total_time:.2f} seconds
+    {Fore.YELLOW}JavaScript processing time:{Style.RESET_ALL} {js_time:.2f} seconds
+    {Fore.YELLOW}Server overhead time:{Style.RESET_ALL} {(total_time - js_time):.2f} seconds
+    {Fore.YELLOW}Chunks processed:{Style.RESET_ALL} {chunk_count}
+    {Fore.YELLOW}Average time per chunk:{Style.RESET_ALL} {(js_time / chunk_count):.2f} seconds
+    """
+
+        print(f"\n{Fore.GREEN}{separator}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}CHATGPT RESPONSE:{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}{'-' * 80}{Style.RESET_ALL}")
         print(self.chatgpt_response)  # Print the response, preserving formatting
-        print(f"{separator}")
+        print(f"{Fore.GREEN}{separator}{Style.RESET_ALL}")
+
+        if metrics_str:
+            print(metrics_str)
+            print(f"{Fore.GREEN}{separator}{Style.RESET_ALL}")
 
     def _create_handler(self):
         """Create and return the HTTP request handler class"""
         prompt_content = self.prompt_content
         prompt_question = self.prompt_question
         server_instance = self  # Reference to the server instance
+
+        from colorama import Fore, Style
+        import time
 
         class CustomHandler(http.server.SimpleHTTPRequestHandler):
             def do_GET(self):
@@ -206,7 +271,8 @@ class LocalServer:
                     })
 
                     self.wfile.write(response.encode())
-                    print("Content served successfully! Waiting for response...")
+                    print(f"\n{Fore.GREEN}Content served successfully! {Style.RESET_ALL}")
+                    print(f"{Fore.CYAN}Waiting for response...{Style.RESET_ALL}")
                 else:
                     self.send_response(404)
                     self.end_headers()
@@ -220,9 +286,11 @@ class LocalServer:
                     try:
                         data = json.loads(post_data.decode('utf-8'))
                         response_text = data.get('response', '')
+                        metrics = data.get('metrics', {})
 
-                        # Save the response in the server instance
+                        # Save the response and metrics in the server instance
                         server_instance.chatgpt_response = response_text
+                        server_instance.metrics = metrics
                         server_instance.response_received = True
 
                         # Send success response
@@ -232,7 +300,8 @@ class LocalServer:
                         self.end_headers()
 
                         self.wfile.write(json.dumps({'success': True}).encode())
-                        print("Response received! Server will stop shortly...")
+                        print(f"\n{Fore.GREEN}Response received! {Style.RESET_ALL}")
+                        print(f"{Fore.CYAN}Server will stop shortly...{Style.RESET_ALL}")
 
                         # Graceful shutdown after a short delay
                         def shutdown_server():
@@ -242,6 +311,7 @@ class LocalServer:
                         threading.Thread(target=shutdown_server, daemon=True).start()
 
                     except Exception as e:
+                        print(f"\n{Fore.RED}Error processing response: {e}{Style.RESET_ALL}")
                         self.send_response(400)
                         self.send_header('Content-type', 'application/json')
                         self.send_header('Access-Control-Allow-Origin', '*')
